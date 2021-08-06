@@ -50,6 +50,12 @@ public class Decoder {
     throw new IOException(message);
   }
 
+  void attachDictionary(ByteBuffer dictionary) throws IOException {
+    if (!decoder.attachDictionary(dictionary)) {
+      fail("failed to attach dictionary");
+    }
+  }
+
   public void enableEagerOutput() {
     this.eager = true;
   }
@@ -154,6 +160,15 @@ public class Decoder {
             buffer.get(chunk);
             output.add(chunk);
             totalOutputSize += chunk.length;
+            break;
+
+          case NEEDS_MORE_INPUT:
+            // Give decoder a chance to process the remaining of the buffered byte.
+            decoder.push(0);
+            // If decoder still needs input, this means that stream is truncated.
+            if (decoder.getStatus() == DecoderJNI.Status.NEEDS_MORE_INPUT) {
+              throw new IOException("corrupted input");
+            }
             break;
 
           default:
