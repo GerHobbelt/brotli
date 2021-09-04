@@ -7,7 +7,7 @@
 extern "C" {
 #endif
 
-extern int brotli_main(int argc, const char* argv[]);
+extern int brotli_main(int argc, const char** argv);
 
 #ifdef __cplusplus
 }
