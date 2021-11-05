@@ -6,21 +6,51 @@
 
 package org.brotli.wrapper.enc;
 
+import org.brotli.enc.PreparedDictionary;
 import java.io.IOException;
 import java.nio.Buffer;
 import java.nio.ByteBuffer;
 import java.nio.channels.WritableByteChannel;
 import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Base class for OutputStream / Channel implementations.
  */
 public class Encoder {
   private final WritableByteChannel destination;
+  private final List<PreparedDictionary> dictionaries;
   private final EncoderJNI.Wrapper encoder;
   private ByteBuffer buffer;
   final ByteBuffer inputBuffer;
   boolean closed;
+
+  /**
+   * https://www.brotli.org/encode.html#aa6f
+   * See encode.h, typedef enum BrotliEncoderMode
+   *
+   * <strong>Important</strong>: The ordinal value of the
+   * modes should be the same as the constant values in encode.h
+   */
+  public enum Mode {
+    /**
+     * Default compression mode.
+     * In this mode compressor does not know anything in advance about the properties of the input.
+     */
+    GENERIC,
+    /**
+     * Compression mode for UTF-8 formatted text input.
+     */
+    TEXT,
+    /**
+     * Compression mode used in WOFF 2.0.
+     */
+    FONT;
+
+    public static Mode of(int value) {
+      return values()[value];
+    }
+  }
 
   /**
    * Brotli encoder settings.
@@ -28,15 +58,19 @@ public class Encoder {
   public static final class Parameters {
     private int quality = -1;
     private int lgwin = -1;
+    private Mode mode;
 
     public Parameters() { }
 
     private Parameters(Parameters other) {
       this.quality = other.quality;
       this.lgwin = other.lgwin;
+      this.mode = other.mode;
     }
 
     /**
+     * Setup encoder quality.
+     *
      * @param quality compression quality, or -1 for default
      */
     public Parameters setQuality(int quality) {
@@ -48,6 +82,8 @@ public class Encoder {
     }
 
     /**
+     * Setup encoder window size.
+     *
      * @param lgwin log2(LZ window size), or -1 for default
      */
     public Parameters setWindow(int lgwin) {
@@ -55,6 +91,16 @@ public class Encoder {
         throw new IllegalArgumentException("lgwin should be in range [10, 24], or -1");
       }
       this.lgwin = lgwin;
+      return this;
+    }
+
+    /**
+     * Setup encoder compression mode.
+     *
+     * @param mode compression mode, or {@code null} for default
+     */
+    public Parameters setMode(Mode mode) {
+      this.mode = mode;
       return this;
     }
   }
@@ -74,8 +120,10 @@ public class Encoder {
     if (destination == null) {
       throw new NullPointerException("destination can not be null");
     }
+    this.dictionaries = new ArrayList<PreparedDictionary>();
     this.destination = destination;
-    this.encoder = new EncoderJNI.Wrapper(inputBufferSize, params.quality, params.lgwin);
+    this.encoder =
+        new EncoderJNI.Wrapper(inputBufferSize, params.quality, params.lgwin, params.mode);
     this.inputBuffer = this.encoder.getInputBuffer();
   }
 
@@ -86,6 +134,14 @@ public class Encoder {
       /* Ignore */
     }
     throw new IOException(message);
+  }
+
+  public void attachDictionary(PreparedDictionary dictionary) throws IOException {
+    if (!encoder.attachDictionary(dictionary.getData())) {
+      fail("failed to attach dictionary");
+    }
+    // Reference to native prepared dictionary wrapper should be held till the end of encoding.
+    dictionaries.add(dictionary);
   }
 
   /**
@@ -163,7 +219,8 @@ public class Encoder {
       return empty;
     }
     /* data.length > 0 */
-    EncoderJNI.Wrapper encoder = new EncoderJNI.Wrapper(data.length, params.quality, params.lgwin);
+    EncoderJNI.Wrapper encoder =
+        new EncoderJNI.Wrapper(data.length, params.quality, params.lgwin, params.mode);
     ArrayList<byte[]> output = new ArrayList<byte[]>();
     int totalOutputSize = 0;
     try {
@@ -201,5 +258,16 @@ public class Encoder {
 
   public static byte[] compress(byte[] data) throws IOException {
     return compress(data, new Parameters());
+  }
+
+  /**
+   * Prepares raw or serialized dictionary for being used by encoder.
+   *
+   * @param dictionary raw / serialized dictionary data; MUST be direct
+   * @param sharedDictionaryType dictionary data type
+   */
+  public static PreparedDictionary prepareDictionary(ByteBuffer dictionary,
+      int sharedDictionaryType) {
+    return EncoderJNI.prepareDictionary(dictionary, sharedDictionaryType);
   }
 }

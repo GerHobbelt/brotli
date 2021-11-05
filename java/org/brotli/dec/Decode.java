@@ -903,7 +903,7 @@ final class Decode {
     }
 
     int chunkLength = Math.min(s.ringBufferSize - s.pos, s.metaBlockLength);
-    BitReader.copyBytes(s, ringBuffer, s.pos, chunkLength);
+    BitReader.copyRawBytes(s, ringBuffer, s.pos, chunkLength);
     s.metaBlockLength -= chunkLength;
     s.pos += chunkLength;
     if (s.pos == s.ringBufferSize) {
@@ -1127,13 +1127,13 @@ final class Decode {
           s.distanceCode = CMD_LOOKUP[cmdCode + 3];
           BitReader.fillBitWindow(s);
           {
-            int extraBits = insertAndCopyExtraBits & 0xFF;
-            s.insertLength = insertLengthOffset + BitReader.readBits(s, extraBits);
+            int insertLengthExtraBits = insertAndCopyExtraBits & 0xFF;
+            s.insertLength = insertLengthOffset + BitReader.readBits(s, insertLengthExtraBits);
           }
           BitReader.fillBitWindow(s);
           {
-            int extraBits = insertAndCopyExtraBits >> 8;
-            s.copyLength = copyLengthOffset + BitReader.readBits(s, extraBits);
+            int copyLengthExtraBits = insertAndCopyExtraBits >> 8;
+            s.copyLength = copyLengthOffset + BitReader.readBits(s, copyLengthExtraBits);
           }
 
           s.j = 0;

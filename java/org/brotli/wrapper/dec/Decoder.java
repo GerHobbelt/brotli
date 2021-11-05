@@ -16,7 +16,7 @@ import java.util.ArrayList;
  * Base class for InputStream / Channel implementations.
  */
 public class Decoder {
-  private static final ByteBuffer EMPTY_BUFER = ByteBuffer.allocate(0);
+  private static final ByteBuffer EMPTY_BUFFER = ByteBuffer.allocate(0);
   private final ReadableByteChannel source;
   private final DecoderJNI.Wrapper decoder;
   ByteBuffer buffer;
@@ -48,6 +48,12 @@ public class Decoder {
       /* Ignore */
     }
     throw new IOException(message);
+  }
+
+  void attachDictionary(ByteBuffer dictionary) throws IOException {
+    if (!decoder.attachDictionary(dictionary)) {
+      fail("failed to attach dictionary");
+    }
   }
 
   public void enableEagerOutput() {
@@ -91,7 +97,7 @@ public class Decoder {
           }
           if (bytesRead == 0) {
             // No input data is currently available.
-            buffer = EMPTY_BUFER;
+            buffer = EMPTY_BUFFER;
             return 0;
           }
           decoder.push(bytesRead);
@@ -154,6 +160,15 @@ public class Decoder {
             buffer.get(chunk);
             output.add(chunk);
             totalOutputSize += chunk.length;
+            break;
+
+          case NEEDS_MORE_INPUT:
+            // Give decoder a chance to process the remaining of the buffered byte.
+            decoder.push(0);
+            // If decoder still needs input, this means that stream is truncated.
+            if (decoder.getStatus() == DecoderJNI.Status.NEEDS_MORE_INPUT) {
+              throw new IOException("corrupted input");
+            }
             break;
 
           default:
