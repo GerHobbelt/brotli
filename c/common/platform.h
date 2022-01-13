@@ -234,6 +234,13 @@ OR:
 #elif defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
 #define BROTLI_LITTLE_ENDIAN 1
 #elif defined(_WIN32) || defined(BROTLI_TARGET_X64)
+#if defined(_WIN32) && !defined(__BYTE_ORDER__)
+#  if defined(_M_IX86) || defined(_M_AMD64) || defined(_M_IA64) || defined (_M_ARM) || defined (_M_ARM64)
+#    define __ORDER_LITTLE_ENDIAN__ 1234
+#    define __ORDER_BIG_ENDIAN__    4321
+#    define __BYTE_ORDER__ __ORDER_LITTLE_ENDIAN__
+#  endif
+#endif
 /* Win32 & x64 can currently always be assumed to be little endian */
 #define BROTLI_LITTLE_ENDIAN 1
 #elif defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
