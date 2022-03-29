@@ -2,20 +2,19 @@
   xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
+
   <parent>
     <groupId>org.brotli</groupId>
     <artifactId>parent</artifactId>
-    <version>0.2.0-SNAPSHOT</version>
+    <version>1.10-SNAPSHOT</version>
   </parent>
   <artifactId>dec</artifactId>
-  <version>0.2.0-SNAPSHOT</version>
   <packaging>jar</packaging>
-
-  <name>${project.groupId}:${project.artifactId}</name>
 
   <properties>
     <manifestdir>${project.build.directory}/osgi</manifestdir>
     <manifestfile>${manifestdir}/MANIFEST.MF</manifestfile>
+    <maven.deploy.skip>false</maven.deploy.skip>
   </properties>
 
   <build>
@@ -23,9 +22,10 @@
     <testSourceDirectory>../../..</testSourceDirectory>
     <plugins>
       <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
         <configuration>
+          <source>11</source>
+          <target>11</target>
           <includes>
             <include>org/brotli/dec/*.java</include>
           </includes>
@@ -38,6 +38,7 @@
           <testExcludes>
             <exclude>org/brotli/dec/SetDictionaryTest.java</exclude>
           </testExcludes>
+
         </configuration>
       </plugin>
       <plugin>
@@ -53,7 +54,7 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-source-plugin</artifactId>
-        <version>2.4</version>
+        <version>3.2.0</version>
         <executions>
           <execution>
             <id>attach-sources</id>
@@ -75,10 +76,7 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-javadoc-plugin</artifactId>
-        <version>2.10.4</version>
-        <configuration>
-          <source>8</source>
-        </configuration>
+        <version>3.3.2</version>
         <executions>
           <execution>
             <id>attach-javadocs</id>
@@ -98,7 +96,7 @@
       <plugin>
         <groupId>org.apache.felix</groupId>
         <artifactId>maven-bundle-plugin</artifactId>
-        <version>3.0.1</version>
+        <version>5.1.4</version>
         <configuration>
           <archive>
             <forced>true</forced>
@@ -129,7 +127,7 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-jar-plugin</artifactId>
-        <version>2.5</version>
+        <version>3.2.2</version>
         <configuration>
           <archive>
             <manifestFile>${manifestfile}</manifestFile>
@@ -138,7 +136,7 @@
       </plugin>
       <plugin>
         <artifactId>maven-resources-plugin</artifactId>
-        <version>3.1.0</version>
+        <version>3.2.0</version>
         <executions>
           <execution>
             <id>copy-license</id>

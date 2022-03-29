@@ -4,7 +4,7 @@
 
   <groupId>org.brotli</groupId>
   <artifactId>parent</artifactId>
-  <version>0.2.0-SNAPSHOT</version>
+  <version>1.10-SNAPSHOT</version>
   <packaging>pom</packaging>
 
   <name>${project.groupId}:${project.artifactId}</name>
@@ -22,11 +22,6 @@
       <organizationUrl>https://github.com/google</organizationUrl>
     </developer>
   </developers>
-  <scm>
-    <connection>scm:git:git://github.com/google/brotli.git</connection>
-    <developerConnection>scm:git:ssh://git@github.com/google/brotli.git</developerConnection>
-    <url>https://github.com/google/brotli</url>
-  </scm>
 
   <modules>
     <module>dec</module>
@@ -34,68 +29,28 @@
 
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+    <maven.deploy.skip>true</maven.deploy.skip>
   </properties>
 
   <distributionManagement>
-    <snapshotRepository>
-      <id>ossrh</id>
-      <url>https://oss.sonatype.org/content/repositories/snapshots</url>
-    </snapshotRepository>
+    <repository>
+      <id>github</id>
+      <name>GitHub Packages</name>
+       <url>https://maven.pkg.github.com/Zephyr-Monitors/${env.PACKAGE_NAME}</url>
+    </repository>
   </distributionManagement>
-
-  <profiles>
-    <profile>
-      <id>release-sign-artifacts</id>
-      <activation>
-        <property>
-          <name>performRelease</name>
-          <value>true</value>
-        </property>
-      </activation>
-      <build>
-        <plugins>
-          <plugin>
-            <groupId>org.apache.maven.plugins</groupId>
-            <artifactId>maven-gpg-plugin</artifactId>
-            <version>1.5</version>
-            <executions>
-              <execution>
-                <id>sign-artifacts</id>
-                <phase>verify</phase>
-                <goals>
-                  <goal>sign</goal>
-                </goals>
-              </execution>
-            </executions>
-          </plugin>
-        </plugins>
-      </build>
-    </profile>
-  </profiles>
-
   <build>
     <plugins>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
-        <version>3.1</version>
+        <version>3.10.1</version>
         <configuration>
-          <source>1.6</source>
-          <target>1.6</target>
-        </configuration>
-      </plugin>
-      <plugin>
-        <groupId>org.sonatype.plugins</groupId>
-        <artifactId>nexus-staging-maven-plugin</artifactId>
-        <version>1.6.7</version>
-        <extensions>true</extensions>
-        <configuration>
-          <serverId>ossrh</serverId>
-          <nexusUrl>https://oss.sonatype.org/</nexusUrl>
-          <autoReleaseAfterClose>false</autoReleaseAfterClose>
+          <source>11</source>
+          <target>11</target>
         </configuration>
       </plugin>
     </plugins>
   </build>
-
 </project>
