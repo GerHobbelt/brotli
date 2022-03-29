@@ -1,5 +1,7 @@
 BROTLI DATA COMPRESSION LIBRARY
 
+Java Decoder Download URL: https://github.com/Zephyr-Monitors/brotli/packages/1333171
+
 Brotli is a generic-purpose lossless compression algorithm that compresses data
 using a combination of a modern variant of the LZ77 algorithm, Huffman coding
 and 2nd order context modeling, with a compression ratio comparable to the best
