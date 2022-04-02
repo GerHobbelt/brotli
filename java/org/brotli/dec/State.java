@@ -73,7 +73,7 @@ final class State {
   int ringBufferBytesWritten;
   int ringBufferBytesReady;
   int isEager;
-  int isLargeWindow;
+  int isLargeWindow = 1;
 
   // Compound dictionary
   int cdNumChunks;

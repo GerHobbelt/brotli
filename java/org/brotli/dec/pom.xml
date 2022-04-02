@@ -6,7 +6,7 @@
   <parent>
     <groupId>org.brotli</groupId>
     <artifactId>parent</artifactId>
-    <version>1.10-SNAPSHOT</version>
+    <version>1.09</version>
   </parent>
   <artifactId>dec</artifactId>
   <packaging>jar</packaging>
@@ -46,6 +46,12 @@
         <artifactId>maven-surefire-plugin</artifactId>
         <version>3.0.0-M3</version>
         <configuration>
+       <compilerArgs>
+          <arg>-verbose</arg>
+          <arg>-XX:+UnlockDiagnosticVMOptions</arg>
+          <arg>-XX:+PrintInlining</arg>
+          <arg>-XX:+PrintCompilation</arg>
+       </compilerArgs>
           <systemPropertyVariables>
             <BROTLI_ENABLE_ASSERTS>true</BROTLI_ENABLE_ASSERTS>
           </systemPropertyVariables>
