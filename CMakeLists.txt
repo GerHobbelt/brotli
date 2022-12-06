@@ -105,12 +105,6 @@ if (ENABLE_SANITIZER)
   set(CMAKE_C_FLAGS " ${CMAKE_C_FLAGS} -fsanitize=${ENABLE_SANITIZER}")
   set(CMAKE_CXX_FLAGS " ${CMAKE_CXX_FLAGS} -fsanitize=${ENABLE_SANITIZER}")
   set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=${ENABLE_SANITIZER}")
-
-  # By default, brotli depends on undefined behavior, but setting
-  # BROTLI_BUILD_PORTABLE should result in a build which does not.
-  if(ENABLE_SANITIZER STREQUAL "undefined")
-    add_definitions(-DBROTLI_BUILD_PORTABLE)
-  endif()
 endif ()
 
 include(CheckFunctionExists)
@@ -152,6 +146,8 @@ elseif(${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD")
   add_definitions(-DOS_FREEBSD)
 elseif(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
   add_definitions(-DOS_MACOSX)
+  set(CMAKE_MACOS_RPATH TRUE)
+  set(CMAKE_INSTALL_NAME_DIR "${CMAKE_INSTALL_PREFIX}/lib")
 endif()
 
 function(transform_sources_list INPUT_FILE OUTPUT_FILE)
