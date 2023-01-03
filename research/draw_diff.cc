@@ -25,7 +25,7 @@ typedef ScanLine* Image;
 
 void ReadPGM(FILE* f, Image* image, size_t* height, size_t* width) {
   int colors;
-  CHECK(fscanf(f, "P5\n%lu %lu\n%d\n", width, height, &colors) == 3);
+  CHECK(fscanf(f, "P5\n%zu %zu\n%d\n", width, height, &colors) == 3);
   assert(colors == 255);
   ScanLine* lines = new ScanLine[*height];
   *image = lines;
@@ -61,7 +61,7 @@ void DrawDiff(int** diff, Image image1, Image image2,
   int abs_max = -min;
   if (abs_max < max) abs_max = max;
 
-  fprintf(f, "P6\n%lu %lu\n%d\n", width, height, abs_max);
+  fprintf(f, "P6\n%zu %zu\n%d\n", width, height, abs_max);
 
   uint8_t* row = new uint8_t[3 * width];
   for (int i = height - 1; i >= 0; --i) {
