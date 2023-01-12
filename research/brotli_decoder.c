@@ -52,7 +52,12 @@ void fail(Context* ctx, const char* message) {
   exit(1);
 }
 
-int main(int argc, char** argv) {
+#if defined(BUILD_MONOLITHIC)
+#define main    brotli_decoder_main
+#endif
+
+int main(int argc, const char** argv)
+{
   Context ctx;
   BrotliDecoderResult result = BROTLI_DECODER_RESULT_NEEDS_MORE_INPUT;
   size_t available_in;

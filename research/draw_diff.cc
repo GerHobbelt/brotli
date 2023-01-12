@@ -83,7 +83,13 @@ void DrawDiff(int** diff, Image image1, Image image2,
   delete[] row;
 }
 
-int main(int argc, char** argv) {
+
+#if defined(BUILD_MONOLITHIC)
+#define main    brotli_draw_diff_main
+#endif
+
+int main(int argc, const char** argv)
+{
   if (argc != 4) {
     printf("usage: %s pgm1 pgm2 diff_ppm_path\n", argv[0]);
     return 1;

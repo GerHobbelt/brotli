@@ -125,7 +125,13 @@ static void printHelp(const char* name) {
       "         Completely unique samples might become empty files.\n\n");
 }
 
-int main(int argc, char const* argv[]) {
+
+#if defined(BUILD_MONOLITHIC)
+#define main    brotli_dictionary_generator_main
+#endif
+
+int main(int argc, const char** argv)
+{
   int dictionaryArg = -1;
   int method = METHOD_DURCHSCHLAG;
   size_t sliceLen = 16;
