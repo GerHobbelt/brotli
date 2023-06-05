@@ -4,7 +4,7 @@
 
   <groupId>org.brotli</groupId>
   <artifactId>parent</artifactId>
-  <version>1.10-SNAPSHOT</version>
+  <version>1.20-SNAPSHOT</version>
   <packaging>pom</packaging>
 
   <name>${project.groupId}:${project.artifactId}</name>
