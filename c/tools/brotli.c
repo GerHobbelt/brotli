@@ -22,6 +22,7 @@
 
 #include <brotli/decode.h>
 #include <brotli/encode.h>
+#include <brotli/types.h>
 
 #include "../common/constants.h"
 #include "../common/version.h"
@@ -109,6 +110,7 @@ typedef struct {
   int verbosity;
   BROTLI_BOOL force_overwrite;
   BROTLI_BOOL junk_source;
+  BROTLI_BOOL reject_uncompressible;
   BROTLI_BOOL copy_stat;
   BROTLI_BOOL write_to_stdout;
   BROTLI_BOOL test_integrity;
@@ -207,6 +209,7 @@ static Command ParseParams(Context* params) {
   BROTLI_BOOL quality_set = BROTLI_FALSE;
   BROTLI_BOOL output_set = BROTLI_FALSE;
   BROTLI_BOOL keep_set = BROTLI_FALSE;
+  BROTLI_BOOL squash_set = BROTLI_FALSE;
   BROTLI_BOOL lgwin_set = BROTLI_FALSE;
   BROTLI_BOOL suffix_set = BROTLI_FALSE;
   BROTLI_BOOL after_dash_dash = BROTLI_FALSE;
@@ -301,6 +304,14 @@ static Command ParseParams(Context* params) {
             return COMMAND_INVALID;
           }
           params->copy_stat = BROTLI_FALSE;
+          continue;
+        } else if (c == 's') {
+          if (squash_set) {
+            fprintf(stderr, "argument --squash / -s already set\n");
+            return COMMAND_INVALID;
+          }
+          squash_set = BROTLI_TRUE;
+          params->reject_uncompressible = BROTLI_TRUE;
           continue;
         } else if (c == 't') {
           if (command_set) {
@@ -438,6 +449,14 @@ static Command ParseParams(Context* params) {
         }
         keep_set = BROTLI_TRUE;
         params->junk_source = BROTLI_TRUE;
+      } else if (strcmp("squash", arg) == 0) {
+        if (squash_set) {
+          fprintf(stderr, "argument --squash / -s already set\n");
+          return COMMAND_INVALID;
+        }
+        squash_set = BROTLI_TRUE;
+        params->reject_uncompressible = BROTLI_TRUE;
+        continue;
       } else if (strcmp("stdout", arg) == 0) {
         if (output_set) {
           fprintf(stderr, "write to standard output already set\n");
@@ -555,6 +574,9 @@ static Command ParseParams(Context* params) {
     if (params->output_path) return COMMAND_INVALID;
     if (params->write_to_stdout) return COMMAND_INVALID;
   }
+  if (params->reject_uncompressible && params->write_to_stdout) {
+    return COMMAND_INVALID;
+  }
   if (strchr(params->suffix, '/') || strchr(params->suffix, '\\')) {
     return COMMAND_INVALID;
   }
@@ -563,9 +585,9 @@ static Command ParseParams(Context* params) {
 }
 
 static void PrintVersion(void) {
-  int major = BROTLI_VERSION >> 24;
-  int minor = (BROTLI_VERSION >> 12) & 0xFFF;
-  int patch = BROTLI_VERSION & 0xFFF;
+  int major = BROTLI_VERSION_MAJOR;
+  int minor = BROTLI_VERSION_MINOR;
+  int patch = BROTLI_VERSION_PATCH;
   fprintf(stdout, "brotli %d.%d.%d\n", major, minor, patch);
 }
 
@@ -584,6 +606,7 @@ static void PrintHelp(const char* name, BROTLI_BOOL error) {
 "  -h, --help                  display this help and exit\n");
   fprintf(media,
 "  -j, --rm                    remove source file(s)\n"
+"  -s, --squash                remove destination file if larger than source\n"
 "  -k, --keep                  keep source file(s) (default)\n"
 "  -n, --no-copy-stat          do not copy source file(s) attributes\n"
 "  -o FILE, --output=FILE      output file (only if 1 input file)\n");
@@ -869,22 +892,23 @@ static BROTLI_BOOL OpenFiles(Context* context) {
   return is_ok;
 }
 
-static BROTLI_BOOL CloseFiles(Context* context, BROTLI_BOOL success) {
+static BROTLI_BOOL CloseFiles(Context* context, BROTLI_BOOL rm_input,
+                              BROTLI_BOOL rm_output) {
   BROTLI_BOOL is_ok = BROTLI_TRUE;
   if (!context->test_integrity && context->fout) {
-    if (!success && context->current_output_path) {
-      unlink(context->current_output_path);
-    }
     if (fclose(context->fout) != 0) {
-      if (success) {
+      if (is_ok) {
         fprintf(stderr, "fclose failed [%s]: %s\n",
                 PrintablePath(context->current_output_path), strerror(errno));
       }
       is_ok = BROTLI_FALSE;
     }
+    if (rm_output && context->current_output_path) {
+      unlink(context->current_output_path);
+    }
 
     /* TOCTOU violation, but otherwise it is impossible to set file times. */
-    if (success && is_ok && context->copy_stat) {
+    if (!rm_output && is_ok && context->copy_stat) {
       CopyStat(context->current_input_path, context->current_output_path);
     }
   }
@@ -898,7 +922,7 @@ static BROTLI_BOOL CloseFiles(Context* context, BROTLI_BOOL success) {
       is_ok = BROTLI_FALSE;
     }
   }
-  if (success && context->junk_source && context->current_input_path) {
+  if (rm_input && context->current_input_path) {
     unlink(context->current_input_path);
   }
 
@@ -1060,6 +1084,8 @@ static BROTLI_BOOL DecompressFile(Context* context, BrotliDecoderState* s) {
 static BROTLI_BOOL DecompressFiles(Context* context) {
   while (NextFile(context)) {
     BROTLI_BOOL is_ok = BROTLI_TRUE;
+    BROTLI_BOOL rm_input = BROTLI_FALSE;
+    BROTLI_BOOL rm_output = BROTLI_TRUE;
     BrotliDecoderState* s = BrotliDecoderCreateInstance(NULL, NULL, NULL);
     if (!s) {
       fprintf(stderr, "out of memory\n");
@@ -1081,7 +1107,9 @@ static BROTLI_BOOL DecompressFiles(Context* context) {
     }
     if (is_ok) is_ok = DecompressFile(context, s);
     BrotliDecoderDestroyInstance(s);
-    if (!CloseFiles(context, is_ok)) is_ok = BROTLI_FALSE;
+    rm_output = !is_ok;
+    rm_input = !rm_output && context->junk_source;
+    if (!CloseFiles(context, rm_input, rm_output)) is_ok = BROTLI_FALSE;
     if (!is_ok) return BROTLI_FALSE;
   }
   return BROTLI_TRUE;
@@ -1126,6 +1154,8 @@ static BROTLI_BOOL CompressFile(Context* context, BrotliEncoderState* s) {
 static BROTLI_BOOL CompressFiles(Context* context) {
   while (NextFile(context)) {
     BROTLI_BOOL is_ok = BROTLI_TRUE;
+    BROTLI_BOOL rm_input = BROTLI_FALSE;
+    BROTLI_BOOL rm_output = BROTLI_TRUE;
     BrotliEncoderState* s = BrotliEncoderCreateInstance(NULL, NULL, NULL);
     if (!s) {
       fprintf(stderr, "out of memory\n");
@@ -1171,7 +1201,17 @@ static BROTLI_BOOL CompressFiles(Context* context) {
     }
     if (is_ok) is_ok = CompressFile(context, s);
     BrotliEncoderDestroyInstance(s);
-    if (!CloseFiles(context, is_ok)) is_ok = BROTLI_FALSE;
+    rm_output = !is_ok;
+    if (is_ok && context->reject_uncompressible) {
+      if (context->total_out >= context->total_in) {
+        rm_output = BROTLI_TRUE;
+        if (context->verbosity > 0) {
+          fprintf(stderr, "Output is larger than input\n");
+        }
+      }
+    }
+    rm_input = !rm_output && context->junk_source;
+    if (!CloseFiles(context, rm_input, rm_output)) is_ok = BROTLI_FALSE;
     if (!is_ok) return BROTLI_FALSE;
   }
   return BROTLI_TRUE;
@@ -1193,6 +1233,7 @@ int main(int argc, const char** argv) {
   context.verbosity = 0;
   context.force_overwrite = BROTLI_FALSE;
   context.junk_source = BROTLI_FALSE;
+  context.reject_uncompressible = BROTLI_FALSE;
   context.copy_stat = BROTLI_TRUE;
   context.test_integrity = BROTLI_FALSE;
   context.write_to_stdout = BROTLI_FALSE;
