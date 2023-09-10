@@ -27,11 +27,11 @@ function bytesToString(bytes) {
 /**
  * NB: String.prototype.repeat causes "Maximum call stack size exceeded".
  *
- * @param {string} char
  * @param {number} count
+ * @param {string} char
  * @return {string}
  */
-function repeat(char, count) {
+function times(count, char) {
   return char.repeat(count);
 }
 
@@ -495,7 +495,8 @@ testBaseDictWordFinishBlockOnRingbufferWrap() {
      */
     compressed,
     true,
-    'aaaaaaaaaaaaaaaaaaaaaaaaaaaatime'
+    times(28, 'a')
+    + 'time'
   );
 },
 
@@ -737,21 +738,8 @@ testCompressedUncompressedShortCompressed() {
      */
     compressed,
     true,
-    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-    + 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-    + 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-    + 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-    + 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-    + 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-    + 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-    + 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-    + 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-    + 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-    + 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-    + 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-    + 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-    + 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-    + 'aaaaaaaaaaaabbbbbbbbbb'
+    times(1022, 'a')
+    + times(10, 'b')
   );
 },
 
@@ -774,21 +762,8 @@ testCompressedUncompressedShortCompressedSmallWindow() {
      */
     compressed,
     true,
-    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-    + 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-    + 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-    + 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-    + 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-    + 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-    + 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-    + 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-    + 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-    + 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-    + 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-    + 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-    + 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-    + 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-    + 'aaaaaaaaaaaabbbbbbbbbb'
+    times(1022, 'a')
+    + times(10, 'b')
   );
 },
 
@@ -1918,15 +1893,7 @@ testManyTinyMetablocks() {
      */
     compressed,
     true,
-    'ababababababababababababababababababababababababababababababababababababab'
-    + 'abababababababababababababababababababababababababababababababababababab'
-    + 'abababababababababababababababababababababababababababababababababababab'
-    + 'abababababababababababababababababababababababababababababababababababab'
-    + 'abababababababababababababababababababababababababababababababababababab'
-    + 'abababababababababababababababababababababababababababababababababababab'
-    + 'abababababababababababababababababababababababababababababababababababab'
-    + 'abababababababababababababababababababababababababababababababababababab'
-    + 'ababababababababababab'
+    times(300, 'ab')
   );
 },
 
@@ -2021,6 +1988,37 @@ testOneInsert() {
   );
 },
 
+testPeculiarWrap() {
+  const compressed = [
+    0x21, 0xfc, 0x1f, 0x00, 0x00, 0xa1, 0x12, 0x82, 0x04, 0x60, 0x1d, 0x00,
+    0xca, 0xfe, 0xba, 0xbe, 0xde, 0xad, 0xbe, 0xef, 0x21, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x38, 0x4e, 0xdb, 0x00, 0x00, 0x70, 0xb0, 0x65, 0x12, 0x03,
+    0x24, 0x00, 0x00, 0xee, 0xb4, 0x91, 0x61, 0x68, 0x64, 0x0c
+  ];
+  checkSynth(
+    /*
+     * main_header: 10
+     * // See ZeroCostCommand
+     * metablock_header_begin: 0, 0, 2048, 0
+     * metablock_header_trivial_context
+     * huffman_simple: 0,1,256, 42
+     * huffman_simple: 0,1,704, 130
+     * huffman_simple: 0,1,64, 0
+     * // Metadata block; at least 8 bytes long
+     * bits: "0", "11", "0", "01", "00000111"
+     * byte_boundary
+     * bits: "11001010", "11111110", "10111010", "10111110"
+     * bits: "11011110", "10101101", "10111110", "11101111"
+     * metablock_header_easy: 3, 1
+     * command_easy: 0, "abc", 0
+     */
+    compressed,
+    true,
+    times(512, 'left')
+    + 'abc'
+  );
+},
+
 testSimplePrefix() {
   const compressed = [
     0x1b, 0x03, 0x00, 0x00, 0xa0, 0xc3, 0xc4, 0xc6, 0xc8, 0x02, 0x00, 0x70,
@@ -2086,8 +2084,7 @@ testSimplePrefixOutOfRangeSymbols() {
 },
 
 testSimplePrefixPlusExtraData() {
-  // SKIP: JS decoder does not tolerate extra input after the brotli stream.
-  if ({}.toString() == {}) return;  // same as 'if (true) return'
+  if (pending) pending(); else return;
   const compressed = [
     0x1b, 0x03, 0x00, 0x00, 0xa0, 0xc3, 0xc4, 0xc6, 0xc8, 0x02, 0x00, 0x70,
     0xb0, 0x65, 0x12, 0x03, 0x24, 0x00, 0x00, 0xee, 0xb4, 0x51, 0xa0, 0x1d,
@@ -2126,8 +2123,6 @@ testStressReadDistanceExtraBits() {
     0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x41, 0x42, 0x43, 0x44, 0x45,
     0x46, 0x03
   ];
-  /* This line is added manually. */
-  const stub = repeat("c", 8388602); const hex = "0123456789ABCDEF";
   checkSynth(
     /*
      * main_header: 24
@@ -2180,8 +2175,10 @@ testStressReadDistanceExtraBits() {
      */
     compressed,
     true,
-    /* This line is modified manually. */
-    "abc" + stub + "abc" + repeat(hex, 3)
+    'abc'
+    + times(8388602, 'c')
+    + 'abc'
+    + times(3, '0123456789ABCDEF')
   );
 },
 
@@ -2258,13 +2255,31 @@ testTransformedDictWordTooLong() {
   );
 },
 
+testZeroCostCommand() {
+  const compressed = [
+    0xa1, 0xf8, 0x1f, 0x00, 0x00, 0xa1, 0x12, 0x82, 0x04, 0x00
+  ];
+  checkSynth(
+    /*
+     * main_header: 10
+     * metablock_header_begin: 1, 0, 1024, 0  // last, not empty, length, compressed
+     * metablock_header_trivial_context
+     * huffman_simple: 0,1,256, 42  // literal: any
+     * huffman_simple: 0,1,704, 130  // command: insert = 0, copy = 4, distance_code = -1
+     * huffman_simple: 0,1,64, 0 // distance: last
+     * // 256 0-bit commands with direct distances
+     */
+    compressed,
+    true,
+    times(256, 'left')
+  );
+},
+
 testZeroCostLiterals() {
   const compressed = [
     0x9b, 0xff, 0xff, 0xff, 0x00, 0x20, 0x54, 0x00, 0x00, 0x38, 0xd8, 0x32,
     0x89, 0x01, 0x12, 0x00, 0x00, 0x77, 0xda, 0xcc, 0xe1, 0x7b, 0xfa, 0x0f
   ];
-  /* This line is added manually. */
-  const expected = repeat("*", 16777216);
   checkSynth(
     /*
      * main_header
@@ -2278,8 +2293,7 @@ testZeroCostLiterals() {
      */
     compressed,
     true,
-    /* This line is modified manually. */
-    expected
+    times(16777216, '*')
   );
 },
 
