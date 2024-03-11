@@ -28,7 +28,12 @@ libbrotlienc = library('brotlienc', sources,
   install: true,
 )
 
-libbrotlienc_dep = declare_dependency(link_with: libbrotlienc)
+libbrotlienc_dep = declare_dependency(
+  include_directories: brotli_incdirs_public,
+  link_with: libbrotlienc,
+)
+
+meson.override_dependency('libbrotlienc', libbrotlienc_dep)
 
 pkg = import('pkgconfig')
 pkg.generate(libbrotlienc,

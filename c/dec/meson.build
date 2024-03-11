@@ -11,7 +11,12 @@ libbrotlidec = library('brotlidec', sources,
   install: true,
 )
 
-libbrotlidec_dep = declare_dependency(link_with: libbrotlidec)
+libbrotlidec_dep = declare_dependency(
+  include_directories: brotli_incdirs_public,
+  link_with: libbrotlidec,
+)
+
+meson.override_dependency('libbrotlidec', libbrotlidec_dep)
 
 pkg = import('pkgconfig')
 pkg.generate(libbrotlidec,

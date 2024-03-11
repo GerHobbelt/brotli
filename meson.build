@@ -28,10 +28,13 @@ configure_file(
   output: 'config.h',
   configuration: cdata,
 )
-add_project_arguments(have_msvc ? '/FI' : '-include', 'config.h', language: 'c')
+add_project_arguments(have_msvc ? '/FI' : '-include', meson.current_build_dir() / 'config.h', language: 'c')
 
 brotli_incdirs = include_directories(
   '.',
+  'c' / 'include',
+)
+brotli_incdirs_public = include_directories(
   'c' / 'include',
 )
 
