@@ -104,11 +104,13 @@ static BROTLI_INLINE void FN(HashMemAllocInBytes)(
 static BROTLI_INLINE void FN(Store)(
     HashLongestMatch* BROTLI_RESTRICT self, const uint8_t* BROTLI_RESTRICT data,
     const size_t mask, const size_t ix) {
+  uint16_t* BROTLI_RESTRICT num = self->num_;
+  uint32_t* BROTLI_RESTRICT buckets = self->buckets_;
   const uint32_t key = FN(HashBytes)(&data[ix & mask], self->hash_shift_);
-  const size_t minor_ix = self->num_[key] & self->block_mask_;
+  const size_t minor_ix = num[key] & self->block_mask_;
   const size_t offset = minor_ix + (key << self->block_bits_);
-  self->buckets_[offset] = (uint32_t)ix;
-  ++self->num_[key];
+  ++num[key];
+  buckets[offset] = (uint32_t)ix;
 }
 
 static BROTLI_INLINE void FN(StoreRange)(HashLongestMatch* BROTLI_RESTRICT self,
@@ -208,6 +210,11 @@ static BROTLI_INLINE void FN(FindLongestMatch)(
       }
     }
   }
+  /* we require matches of len >4, so increase best_len to 3, so we can compare
+   * 4 bytes all the time. */
+  if (best_len < 3) {
+    best_len = 3;
+  }
   {
     const uint32_t key =
         FN(HashBytes)(&data[cur_ix_masked], self->hash_shift_);
@@ -223,7 +230,9 @@ static BROTLI_INLINE void FN(FindLongestMatch)(
       prev_ix &= ring_buffer_mask;
       if (cur_ix_masked + best_len > ring_buffer_mask ||
           prev_ix + best_len > ring_buffer_mask ||
-          data[cur_ix_masked + best_len] != data[prev_ix + best_len]) {
+          /* compare 4 bytes ending at best_len + 1 */
+          BrotliUnalignedRead32(&data[cur_ix_masked + best_len - 3]) !=
+              BrotliUnalignedRead32(&data[prev_ix + best_len - 3])) {
         continue;
       }
       {
