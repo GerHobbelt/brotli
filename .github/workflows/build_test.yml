@@ -159,10 +159,6 @@ jobs:
             build_system: bazel
             bazel_project: java
 
-          - name: bazel:js
-            build_system: bazel
-            bazel_project: js
-
           - name: bazel:research
             build_system: bazel
             bazel_project: research
@@ -180,11 +176,6 @@ jobs:
           - name: bazel-osx:java
             build_system: bazel
             bazel_project: java
-            os: macos-latest
-
-          - name: bazel-osx:js
-            build_system: bazel
-            bazel_project: js
             os: macos-latest
 
           - name: bazel-osx:research
@@ -207,12 +198,6 @@ jobs:
             build_system: bazel
             bazel_project: java
             os: windows-latest
-
-          # TODO: blocked by Bazel Closure rules issue
-          #- name: bazel-win:js
-          #  build_system: bazel
-          #  bazel_project: js
-          #  os: windows-latest
 
           - name: bazel-win:research
             build_system: bazel
@@ -338,7 +323,7 @@ jobs:
         cd integration
         mvn -B verify
 
-    - uses: actions/setup-python@65d7f2d534ac1bc67fcd62888c5f4f3d2cb2b236 # v4.7.1
+    - uses: actions/setup-python@0a5c61591373683505ea898e09a3ea4f39ef2b9c # v5.0.0
       if: ${{ matrix.build_system == 'python' }}
       with:
         python-version: ${{ matrix.python_version }}
