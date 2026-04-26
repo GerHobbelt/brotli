@@ -44,6 +44,7 @@ endif()
 # Reflect CMake variable as a build option.
 option(BUILD_SHARED_LIBS "Build shared libraries" ON)
 set(BROTLI_BUILD_TOOLS ON CACHE BOOL "Build/install CLI tools")
+option(BROTLI_BUILD_BENCHMARKS "Build benchmarks (requires C++ compiler and libpfm4)" OFF)
 set(BROTLI_BUILD_FOR_PACKAGE OFF CACHE BOOL "Build/install both shared and static libraries")
 
 if (BROTLI_BUILD_FOR_PACKAGE AND NOT BUILD_SHARED_LIBS)
@@ -400,4 +401,10 @@ install(FILES docs/constants.h.3 docs/decode.h.3 docs/encode.h.3 docs/types.h.3
 
 if (ENABLE_COVERAGE STREQUAL "yes")
   setup_target_for_coverage(coverage test coverage)
+endif()
+
+# Benchmarks
+if (BROTLI_BUILD_BENCHMARKS)
+  enable_language(CXX)
+  add_subdirectory(benchmark)
 endif()

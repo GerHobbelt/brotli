@@ -4,6 +4,7 @@
 *.obj
 bin/
 buildfiles/
+build-*/
 **/obj/
 dist/
 **/bazel-*
@@ -18,3 +19,6 @@ __pycache__/
 *.txt.uncompressed
 *.br
 *.unbr
+
+# Benchmark corpus
+benchmark/corpus/
