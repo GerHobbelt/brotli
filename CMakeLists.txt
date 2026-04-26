@@ -310,6 +310,33 @@ if (NOT BROTLI_DISABLE_TESTS AND BROTLI_BUILD_TOOLS)
           -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/run-compatibility-test.cmake)
     endif()
   endforeach()
+
+  # Corpus roundtrip tests (only if benchmark corpus has been downloaded)
+  set(CORPUS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/benchmark/corpus")
+  if(IS_DIRECTORY "${CORPUS_DIR}")
+    enable_language(CXX)
+
+    include(FetchContent)
+    FetchContent_Declare(
+      googletest
+      GIT_REPOSITORY https://github.com/google/googletest.git
+      GIT_TAG v1.16.0)
+    set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
+    set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(googletest)
+
+    add_executable(corpus_roundtrip_test tests/corpus_roundtrip_test.cc)
+    target_link_libraries(corpus_roundtrip_test
+      PRIVATE brotlienc brotlidec brotlicommon GTest::gtest)
+    target_include_directories(corpus_roundtrip_test PRIVATE c/include)
+    set_target_properties(corpus_roundtrip_test PROPERTIES
+      CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+
+    # Single test entry — runs all 5 qualities with one corpus load.
+    # Use --gtest_filter='*qN' to run a single quality.
+    add_test(NAME corpus-roundtrip
+      COMMAND corpus_roundtrip_test --corpus=${CORPUS_DIR})
+  endif()
 endif()  # BROTLI_DISABLE_TESTS
 
 # Generate a pkg-config files
