@@ -83,6 +83,7 @@ BOOST_PATH = Path("/sys/devices/system/cpu/cpufreq/boost")          # AMD/acpi
 NO_TURBO_PATH = Path("/sys/devices/system/cpu/intel_pstate/no_turbo")  # Intel
 GOV_PATH = Path("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
 ASLR_PATH = Path("/proc/sys/kernel/randomize_va_space")
+PARANOID_PATH = Path("/proc/sys/kernel/perf_event_paranoid")
 
 
 def _read(path):
@@ -97,6 +98,7 @@ def read_env_state():
     state = {
         "governor": _read(GOV_PATH),
         "aslr": _read(ASLR_PATH),
+        "perf_event_paranoid": _read(PARANOID_PATH),
         "cpu_model": None,
         "nproc": os.cpu_count(),
     }
@@ -525,6 +527,24 @@ def main():
 
     env_state = read_env_state()
     warn_if_noisy(env_state)
+
+    # Preflight: counters mode needs perf_event_open access. Root/CAP_PERFMON
+    # bypasses perf_event_paranoid; otherwise paranoid > 2 blocks it. Fail fast
+    # with the fix rather than building, then emitting cryptic per-counter
+    # "Failed to get a file descriptor" warnings and recording no counters.
+    if args.mode == "counters" and os.geteuid() != 0:
+        try:
+            paranoid = int(env_state.get("perf_event_paranoid"))
+        except (TypeError, ValueError):
+            paranoid = None
+        if paranoid is not None and paranoid > 2:
+            sys.exit(
+                f"counters mode needs perf access, but "
+                f"kernel.perf_event_paranoid={paranoid} blocks it for non-root."
+                f"\nFix one of:\n"
+                f"  - run as root:  sudo python3 {sys.argv[0]} ... --mode counters\n"
+                f"  - lower it:     sudo sysctl -w kernel.perf_event_paranoid=1"
+                f"  (persist in /etc/sysctl.d/)")
 
     print(f"Building baseline ({args.baseline}) ...", file=sys.stderr)
     baseline = build_version(repo_root, args.baseline)
