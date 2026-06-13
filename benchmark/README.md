@@ -80,12 +80,30 @@ benchmark/ab.py --baseline master --candidate HEAD \
 
 ### Variance reduction
 
-By default the run is pinned to a core (`--core`, default 3) and wrapped in
-`setarch -R` (ASLR off); if run as root it also gets real-time priority
-(`chrt`). The CPU governor and turbo/boost are **recorded but not changed** —
+By default the run is pinned to a core (`--core`, default 3), wrapped in
+`setarch -R` (ASLR off), and — when run as root — given high niceness
+(`nice -n -20`). It deliberately does **not** use real-time (`SCHED_FIFO`)
+scheduling: a long CPU-bound run pinned at RT priority starves the pinned
+core's kernel threads (which can drop networking) and trips RT bandwidth
+throttling. The CPU governor and turbo/boost are **recorded but not changed** —
 pass `--tune` (requires root) to set the `performance` governor and disable
 boost for the run, restoring them on exit. Without `--tune` the script warns if
 the governor isn't `performance` or boost is on.
+
+For a near-dedicated core, isolate it (and its SMT sibling) at the kernel
+level. On this 8C/16T Ryzen, physical core 3 is logical CPUs 3 and 11; add to
+`GRUB_CMDLINE_LINUX_DEFAULT` and `update-grub` + reboot:
+
+```
+isolcpus=domain,managed_irq,3,11 nohz_full=3,11 rcu_nocbs=3,11 irqaffinity=0-2,4-10,12-15
+```
+
+This removes 3/11 from the scheduler, stops their tick, offloads RCU, and
+steers movable IRQs (incl. wifi) off them; `managed_irq` keeps managed device
+IRQs (NVMe, etc.) away too where possible. `ab.py` warns if `--core` isn't in
+`/sys/devices/system/cpu/isolated`, and records the isolation state plus
+per-CPU `/proc/interrupts` deltas for the pinned core and its sibling in the
+manifest. With this set up, A/B runs here see <0.1% run-to-run variance.
 
 Other flags: `--lgwin`, `--repetitions`, `--no-pin`, `--no-aslr-disable`,
 `--allow-dirty` (proceed despite uncommitted tracked changes, which are *not*
@@ -97,7 +115,9 @@ Each run writes `benchmark/results/<timestamp>__<baseSHA>_vs_<candSHA>/`
 containing the per-version artifacts (JSON / profile / digest) and a
 `manifest.json` with full provenance: both commit SHAs, binary hashes, compiler
 version, corpus path + fingerprint, CPU model, governor/turbo/ASLR state,
-pinned core, exact command lines, and the comparison result.
+pinned core, isolation state (isolated CPUs, whether the pinned core is
+isolated, SMT sibling, interrupt deltas), exact command lines, and the
+comparison result.
 
 ## Corpus roundtrip tests
 

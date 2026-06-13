@@ -126,6 +126,65 @@ def warn_if_noisy(state):
               file=sys.stderr)
 
 
+def parse_cpu_list(s):
+    """'3,11' or '3-4,11' -> {3, 11} / {3, 4, 11}."""
+    cpus = set()
+    for part in (s or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            a, b = part.split("-")
+            cpus.update(range(int(a), int(b) + 1))
+        else:
+            cpus.add(int(part))
+    return cpus
+
+
+def isolated_cpus():
+    return parse_cpu_list(_read(Path("/sys/devices/system/cpu/isolated")))
+
+
+def core_sibling(core):
+    """The SMT sibling logical CPU of `core`, or None."""
+    sibs = parse_cpu_list(_read(Path(
+        f"/sys/devices/system/cpu/cpu{core}/topology/thread_siblings_list")))
+    sibs.discard(core)
+    return min(sibs) if sibs else None
+
+
+def read_irq_counts():
+    """Per-CPU interrupt counts from /proc/interrupts: {irq: [per-cpu...]}."""
+    lines = (_read(Path("/proc/interrupts")) or "").splitlines()
+    if not lines:
+        return {}
+    ncpu = len(lines[0].split())
+    counts = {}
+    for line in lines[1:]:
+        parts = line.split()
+        if len(parts) < 1 + ncpu or not parts[0].endswith(":"):
+            continue
+        try:
+            counts[parts[0].rstrip(":")] = [int(x) for x in parts[1:1 + ncpu]]
+        except ValueError:
+            continue
+    return counts
+
+
+def irq_delta_on_cpu(before, after, cpu):
+    """Nonzero per-IRQ deltas fired on one CPU column, plus the total."""
+    delta = {}
+    for irq, after_vals in after.items():
+        if cpu >= len(after_vals):
+            continue
+        b = before.get(irq, [])
+        prev = b[cpu] if cpu < len(b) else 0
+        d = after_vals[cpu] - prev
+        if d:
+            delta[irq] = d
+    return {"per_irq": delta, "total": sum(delta.values())}
+
+
 class Tuner:
     """Optionally set performance governor + disable boost, restore on exit."""
 
@@ -167,10 +226,23 @@ class Tuner:
 
 
 def build_wrapper(core, no_pin, no_aslr):
-    """Prefix that pins the run and removes layout noise."""
+    """Prefix that pins the run and removes scheduling/layout noise.
+
+    Deliberately NOT real-time (SCHED_FIFO): a long CPU-bound run pinned to one
+    core at RT priority starves that core's kernel threads (IRQ/softirq) --
+    which can drop networking -- and also hits RT bandwidth throttling, adding
+    jitter. Core isolation (isolcpus) is what yields a near-dedicated core;
+    `nice` just gives it priority over any stray normal task, safely.
+    """
     wrap = []
     if not no_pin:
         wrap += ["taskset", "-c", str(core)]
+        if core not in isolated_cpus():
+            print(f"WARNING: core {core} is NOT in the kernel's isolated set "
+                  f"({_read(Path('/sys/devices/system/cpu/isolated')) or 'none'})"
+                  f"; it shares the core with other work and results will be "
+                  f"noisier. Boot with isolcpus or pick an isolated --core.",
+                  file=sys.stderr)
     if not no_aslr and shutil.which("setarch"):
         # Verify setarch -R works on this box before relying on it.
         if run(["setarch", "-R", "true"], capture=True, check=False).returncode == 0:
@@ -178,8 +250,8 @@ def build_wrapper(core, no_pin, no_aslr):
         else:
             print("WARNING: 'setarch -R' unavailable; ASLR not disabled.",
                   file=sys.stderr)
-    if os.geteuid() == 0 and shutil.which("chrt"):
-        wrap += ["chrt", "-f", "99"]   # real-time priority (root only)
+    if os.geteuid() == 0 and shutil.which("nice"):
+        wrap += ["nice", "-n", "-20"]
     return wrap
 
 
@@ -196,14 +268,30 @@ def build_version(repo_root, ref):
 
     if not wt.exists():
         wt.parent.mkdir(parents=True, exist_ok=True)
-        run(["git", "worktree", "add", "--detach", str(wt), sha], cwd=repo_root)
+        run(["git", "worktree", "add", "--detach", str(wt), sha],
+            cwd=repo_root, capture=True)
 
     if not binary.exists():
-        run(["cmake", "-B", str(build), "-S", str(wt),
+        build.mkdir(parents=True, exist_ok=True)
+        log_path = build / "ab-build.log"
+        print(f"  building {ref} ({sha[:12]}); output -> {log_path}",
+              file=sys.stderr)
+        steps = [
+            ["cmake", "-B", str(build), "-S", str(wt),
              "-DCMAKE_BUILD_TYPE=Release", "-DBROTLI_BUILD_BENCHMARKS=ON",
-             "-DBROTLI_DISABLE_TESTS=ON"])
-        run(["cmake", "--build", str(build), "-j", str(os.cpu_count()),
-             "--target", "brotli_benchmark"])
+             "-DBROTLI_DISABLE_TESTS=ON"],
+            ["cmake", "--build", str(build), "-j", str(os.cpu_count()),
+             "--target", "brotli_benchmark"],
+        ]
+        chunks = []
+        for step in steps:
+            r = run(step, capture=True, check=False)
+            chunks.append(f"$ {' '.join(step)}\n{r.stdout}")
+            if r.returncode != 0:
+                log_path.write_text("".join(chunks))
+                sys.stderr.write("".join(chunks))
+                sys.exit(f"build failed for {ref} ({sha[:12]}); see {log_path}")
+        log_path.write_text("".join(chunks))
 
     if not binary.exists():
         sys.exit(f"build produced no benchmark binary at {binary}")
@@ -270,7 +358,9 @@ def run_one(args, version, which, record_dir, wrapper):
         out = record_dir / f"{which}.json"
         cmd += [f"--benchmark_out={out}", "--benchmark_out_format=json",
                 f"--benchmark_repetitions={args.repetitions}",
-                "--benchmark_enable_random_interleaving=true"]
+                "--benchmark_enable_random_interleaving=true",
+                # Console shows only aggregate rows; the JSON keeps every rep.
+                "--benchmark_display_aggregates_only=true"]
         if args.mode == "counters":
             cmd += [f"--benchmark_perf_counters={args.counters}"]
         console = record_dir / f"{which}.console.txt"
@@ -441,10 +531,29 @@ def main():
     with Tuner(args.tune):
         # Re-read env so the manifest reflects the actual (tuned) state.
         env_state = read_env_state()
+        irq_before = read_irq_counts()
         print(f"\n== baseline {baseline['sha'][:12]} ==", file=sys.stderr)
         base_art = run_one(args, baseline, "baseline", record_dir, wrapper)
         print(f"== candidate {candidate['sha'][:12]} ==", file=sys.stderr)
         cand_art = run_one(args, candidate, "candidate", record_dir, wrapper)
+        irq_after = read_irq_counts()
+
+    # Isolation provenance: was the pinned core actually isolated, and did any
+    # interrupts fire on it (or its SMT sibling) during the runs?
+    iso = isolated_cpus()
+    sibling = None if args.no_pin else core_sibling(args.core)
+    isolation = {
+        "isolated_cpus": _read(Path("/sys/devices/system/cpu/isolated")) or "",
+        "pinned_core_isolated": (not args.no_pin) and args.core in iso,
+        "pinned_core_sibling": sibling,
+    }
+    if not args.no_pin:
+        irqs = {f"cpu{args.core}":
+                irq_delta_on_cpu(irq_before, irq_after, args.core)}
+        if sibling is not None:
+            irqs[f"cpu{sibling}"] = irq_delta_on_cpu(irq_before, irq_after,
+                                                     sibling)
+        isolation["interrupts_during_run"] = irqs
 
     comparison = None
     if args.mode in ("time", "counters"):
@@ -462,6 +571,7 @@ def main():
         "tuned": args.tune,
         "wrapper": wrapper,
         "pinned_core": None if args.no_pin else args.core,
+        "isolation": isolation,
         "mode": args.mode,
         "quality": args.quality,
         "lgwin": args.lgwin,
