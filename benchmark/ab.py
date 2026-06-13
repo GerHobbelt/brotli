@@ -52,6 +52,23 @@ def git(args, cwd=None):
     return run(["git", *args], capture=True, cwd=cwd).stdout.strip()
 
 
+def run_tee(cmd, *, env, log_path):
+    """Run a command, streaming its output to both the terminal and a log file
+    so the Google Benchmark report is visible live and persisted in the run
+    record."""
+    with open(log_path, "w") as log:
+        proc = subprocess.Popen(
+            cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1)
+        for line in proc.stdout:
+            sys.stdout.write(line)
+            log.write(line)
+        proc.wait()
+    sys.stdout.flush()
+    if proc.returncode != 0:
+        sys.exit(f"command failed (exit {proc.returncode}): {' '.join(cmd)}")
+
+
 def sha256_file(path):
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -256,8 +273,10 @@ def run_one(args, version, which, record_dir, wrapper):
                 "--benchmark_enable_random_interleaving=true"]
         if args.mode == "counters":
             cmd += [f"--benchmark_perf_counters={args.counters}"]
-        run(cmd, env=env)
+        console = record_dir / f"{which}.console.txt"
+        run_tee(cmd, env=env, log_path=console)
         artifacts["json"] = str(out)
+        artifacts["console"] = str(console)
 
     elif args.mode == "pprof":
         lib = find_libprofiler()
@@ -269,8 +288,10 @@ def run_one(args, version, which, record_dir, wrapper):
         env["CPUPROFILE"] = str(out)
         env["CPUPROFILE_FREQUENCY"] = "1000"
         cmd += [f"--benchmark_repetitions={args.repetitions}"]
-        run(cmd, env=env)
+        console = record_dir / f"{which}.console.txt"
+        run_tee(cmd, env=env, log_path=console)
         artifacts["pprof"] = str(out)
+        artifacts["console"] = str(console)
 
     artifacts["command"] = cmd
     return artifacts
@@ -455,7 +476,10 @@ def main():
         "comparison": comparison,
     }
     (record_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
-    print(f"Run record: {record_dir}", file=sys.stderr)
+
+    print(f"\nRun record: {record_dir}")
+    for f in sorted(record_dir.iterdir()):
+        print(f"  {f.name}")
 
 
 if __name__ == "__main__":
