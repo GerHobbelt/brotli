@@ -138,10 +138,21 @@ binary) to run a single quality.
 ```bash
 benchmark/ab.py --baseline master --candidate HEAD \
   --corpus ~/Development/testdata/srp_desktop --mode pprof
+```
 
-# View a captured profile (Go pprof; optional):
-#   sudo apt install -y golang-go && go install github.com/google/pprof@latest
-pprof -http=:8080 \
+View a captured profile with Go pprof, passing the matching version's binary
+(for symbols) and the profile:
+
+```bash
+# one-time: sudo apt install -y golang-go && go install github.com/google/pprof@latest
+~/go/bin/pprof -http=:8080 \
   .ab-cache/build/<sha>/benchmark/brotli_benchmark \
   benchmark/results/<run>/candidate.prof
 ```
+
+The binary is always `.ab-cache/build/<sha>/benchmark/brotli_benchmark`, where
+`<sha>` is taken from the run-record directory name (and recorded in
+`manifest.json`). Builds include `-g` (without changing optimization or
+generated code), so pprof's per-source-line view and `-list <func>` work; the
+hot encoder code lives in `libbrotlienc.so` in that same build dir, so don't
+move/delete it or symbols won't resolve.

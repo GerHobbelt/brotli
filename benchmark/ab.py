@@ -277,9 +277,13 @@ def build_version(repo_root, ref):
         print(f"  building {ref} ({sha[:12]}); output -> {log_path}",
               file=sys.stderr)
         steps = [
+            # Release optimization plus -g: debug info lets pprof show
+            # per-source-line samples. -g does not change generated code, so
+            # timing runs are unaffected -- it only adds DWARF sections.
             ["cmake", "-B", str(build), "-S", str(wt),
              "-DCMAKE_BUILD_TYPE=Release", "-DBROTLI_BUILD_BENCHMARKS=ON",
-             "-DBROTLI_DISABLE_TESTS=ON"],
+             "-DBROTLI_DISABLE_TESTS=ON",
+             "-DCMAKE_C_FLAGS=-g", "-DCMAKE_CXX_FLAGS=-g"],
             ["cmake", "--build", str(build), "-j", str(os.cpu_count()),
              "--target", "brotli_benchmark"],
         ]
@@ -374,10 +378,16 @@ def run_one(args, version, which, record_dir, wrapper):
             sys.exit("pprof mode needs libprofiler.so "
                      "(apt install libgoogle-perftools-dev)")
         out = record_dir / f"{which}.prof"
-        env["LD_PRELOAD"] = lib
-        env["CPUPROFILE"] = str(out)
-        env["CPUPROFILE_FREQUENCY"] = "1000"
-        cmd += [f"--benchmark_repetitions={args.repetitions}"]
+        # Scope the profiler vars to the benchmark binary ONLY, via an `env`
+        # shim placed after the taskset/setarch wrappers. If LD_PRELOAD/
+        # CPUPROFILE were in the wrappers' environment, libprofiler would arm
+        # ITIMER_PROF inside the wrapper; that timer survives execve() into the
+        # benchmark and fires before the benchmark's own SIGPROF handler is
+        # installed, killing it with "Profiling timer expired".
+        shim = ["env", f"LD_PRELOAD={lib}", f"CPUPROFILE={out}",
+                "CPUPROFILE_FREQUENCY=1000"]
+        cmd = (list(wrapper) + shim + [binary] + base_args(args, corpus) +
+               [f"--benchmark_repetitions={args.repetitions}"])
         console = record_dir / f"{which}.console.txt"
         run_tee(cmd, env=env, log_path=console)
         artifacts["pprof"] = str(out)
