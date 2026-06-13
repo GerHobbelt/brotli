@@ -1,5 +1,5 @@
 /*
- * Corpus roundtrip test: loads all .js files from a directory, then for each
+ * Corpus roundtrip test: loads all files from a directory, then for each
  * quality level (5-9) compresses and decompresses every file in parallel
  * threads, verifying each roundtrips to the original bytes.
  *
@@ -38,7 +38,7 @@ static size_t g_corpus_total_size = 0;
 static void LoadCorpus(const std::string& dir) {
   std::vector<fs::path> paths;
   for (const auto& entry : fs::directory_iterator(dir)) {
-    if (entry.is_regular_file() && entry.path().extension() == ".js") {
+    if (entry.is_regular_file()) {
       paths.push_back(entry.path());
     }
   }
@@ -171,7 +171,7 @@ int main(int argc, char** argv) {
 
   LoadCorpus(corpus_dir);
   if (g_corpus.empty()) {
-    fprintf(stderr, "No .js files found in %s\n", corpus_dir.c_str());
+    fprintf(stderr, "No files found in %s\n", corpus_dir.c_str());
     return 1;
   }
   fprintf(stderr, "Loaded %zu files, %.1f MB from %s\n",

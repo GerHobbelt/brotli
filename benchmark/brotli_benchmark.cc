@@ -5,13 +5,15 @@
  * benchmarks BrotliEncoderCompress() across the entire corpus.
  *
  * Usage:
- *   brotli_benchmark [--quality=N] [--corpus=DIR] [Google Benchmark flags...]
+ *   brotli_benchmark [--quality=N] [--lgwin=N] [--corpus=DIR] [--digest=FILE]
+ *                    [Google Benchmark flags...]
  *
  * Examples:
  *   brotli_benchmark
  *   brotli_benchmark --quality=9
  *   brotli_benchmark --benchmark_perf_counters=CYCLES,INSTRUCTIONS
  *   brotli_benchmark --benchmark_out=results.json --benchmark_out_format=json
+ *   brotli_benchmark --digest=out.txt   # write per-file output hashes, no bench
  */
 
 #include <benchmark/benchmark.h>
@@ -39,6 +41,11 @@ static size_t g_corpus_total_size = 0;
 static int g_quality = 6;
 static int g_lgwin = BROTLI_DEFAULT_WINDOW;
 static std::string g_corpus_dir;
+static std::string g_digest_path;
+
+/* Encoder mode shared by the benchmark loop and the --digest mode, so a digest
+   reflects exactly the bytes the benchmark would compress. */
+static const BrotliEncoderMode g_mode = BROTLI_MODE_TEXT;
 
 static void LoadCorpus(const std::string& dir) {
   g_corpus.clear();
@@ -46,7 +53,7 @@ static void LoadCorpus(const std::string& dir) {
 
   std::vector<fs::path> paths;
   for (const auto& entry : fs::directory_iterator(dir)) {
-    if (entry.is_regular_file() && entry.path().extension() == ".js") {
+    if (entry.is_regular_file()) {
       paths.push_back(entry.path());
     }
   }
@@ -80,6 +87,48 @@ static void LoadCorpus(const std::string& dir) {
           g_corpus.size(), g_corpus_total_size / (1024.0 * 1024.0));
 }
 
+/* FNV-1a 64-bit hash of a byte buffer. */
+static uint64_t Fnv1a64(const uint8_t* data, size_t len) {
+  uint64_t h = 0xcbf29ce484222325ULL;
+  for (size_t i = 0; i < len; i++) {
+    h ^= data[i];
+    h *= 0x100000001b3ULL;
+  }
+  return h;
+}
+
+/* Compress every corpus file at the configured quality/lgwin/mode and write a
+   per-file digest of the compressed output: "name<TAB>len<TAB>fnv64". Used to
+   verify two encoder versions produce bit-identical output. Returns 0 on
+   success. */
+static int WriteDigest(const std::string& path) {
+  FILE* out = fopen(path.c_str(), "wb");
+  if (!out) {
+    fprintf(stderr, "Error: cannot open digest file %s\n", path.c_str());
+    return 1;
+  }
+  for (const auto& cf : g_corpus) {
+    size_t max_size = BrotliEncoderMaxCompressedSize(cf.data.size());
+    if (max_size == 0) max_size = cf.data.size() * 2;
+    std::vector<uint8_t> compressed(max_size);
+    size_t encoded_size = max_size;
+    BROTLI_BOOL ok = BrotliEncoderCompress(
+        g_quality, g_lgwin, g_mode,
+        cf.data.size(), cf.data.data(), &encoded_size, compressed.data());
+    if (!ok) {
+      fprintf(stderr, "Error: compression failed for %s\n", cf.name.c_str());
+      fclose(out);
+      return 1;
+    }
+    fprintf(out, "%s\t%zu\t%016llx\n", cf.name.c_str(), encoded_size,
+            (unsigned long long)Fnv1a64(compressed.data(), encoded_size));
+  }
+  fclose(out);
+  fprintf(stderr, "Wrote digest for %zu files to %s\n", g_corpus.size(),
+          path.c_str());
+  return 0;
+}
+
 static void BM_BrotliEncode(benchmark::State& state) {
   if (g_corpus.empty()) {
     state.SkipWithError("No corpus files loaded");
@@ -104,7 +153,7 @@ static void BM_BrotliEncode(benchmark::State& state) {
     for (size_t i = 0; i < g_corpus.size(); i++) {
       size_t encoded_size = max_sizes[i];
       BROTLI_BOOL ok = BrotliEncoderCompress(
-          g_quality, g_lgwin, BROTLI_MODE_TEXT,
+          g_quality, g_lgwin, g_mode,
           g_corpus[i].data.size(), g_corpus[i].data.data(),
           &encoded_size, output_bufs[i].data());
       if (!ok) {
@@ -149,6 +198,8 @@ static void ParseCustomFlags(int* argc, char** argv) {
       g_lgwin = atoi(argv[i] + 8);
     } else if (strncmp(argv[i], "--corpus=", 9) == 0) {
       g_corpus_dir = argv[i] + 9;
+    } else if (strncmp(argv[i], "--digest=", 9) == 0) {
+      g_digest_path = argv[i] + 9;
     } else {
       argv[dst++] = argv[i];
     }
@@ -187,6 +238,12 @@ int main(int argc, char** argv) {
     fprintf(stderr, "Error: No .js files found in %s\n", g_corpus_dir.c_str());
     fprintf(stderr, "Run: python3 benchmark/download_corpus.py\n");
     return 1;
+  }
+
+  /* Digest mode: emit per-file compressed-output hashes and exit without
+     running the benchmark (used for bit-identity comparison). */
+  if (!g_digest_path.empty()) {
+    return WriteDigest(g_digest_path);
   }
 
   benchmark::Initialize(&argc, argv);

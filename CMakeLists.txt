@@ -311,9 +311,25 @@ if (NOT BROTLI_DISABLE_TESTS AND BROTLI_BUILD_TOOLS)
     endif()
   endforeach()
 
-  # Corpus roundtrip tests (only if benchmark corpus has been downloaded)
-  set(CORPUS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/benchmark/corpus")
-  if(IS_DIRECTORY "${CORPUS_DIR}")
+  # Corpus roundtrip tests. Runs against each directory in BROTLI_TEST_CORPORA
+  # that exists; the gtest target is built only if at least one is present.
+  # Override the list with -DBROTLI_TEST_CORPORA="dir1;dir2".
+  set(BROTLI_TEST_CORPORA
+    "/home/lucas/Development/testdata/srp_desktop"
+    "/home/lucas/Development/testdata/search_requests_december_9_2025/output"
+    "/home/lucas/Development/testdata/search_requests_december_16_2025/search_requests_december_16_2025/output"
+    CACHE STRING "Corpus directories for the corpus_roundtrip_test")
+
+  set(_existing_corpora)
+  foreach(_corpus ${BROTLI_TEST_CORPORA})
+    if(IS_DIRECTORY "${_corpus}")
+      list(APPEND _existing_corpora "${_corpus}")
+    else()
+      message(NOTICE "Corpus directory ${_corpus} does not exist; skipping.")
+    endif()
+  endforeach()
+
+  if(_existing_corpora)
     enable_language(CXX)
 
     include(FetchContent)
@@ -332,10 +348,19 @@ if (NOT BROTLI_DISABLE_TESTS AND BROTLI_BUILD_TOOLS)
     set_target_properties(corpus_roundtrip_test PROPERTIES
       CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 
-    # Single test entry — runs all 5 qualities with one corpus load.
-    # Use --gtest_filter='*qN' to run a single quality.
-    add_test(NAME corpus-roundtrip
-      COMMAND corpus_roundtrip_test --corpus=${CORPUS_DIR})
+    # One test entry per corpus, each running all 5 qualities with a single
+    # corpus load. Use --gtest_filter='*qN' to run a single quality. The leaf
+    # name "output" is ambiguous across corpora, so derive a unique label from
+    # the parent directory in that case.
+    foreach(_corpus ${_existing_corpora})
+      get_filename_component(_leaf "${_corpus}" NAME)
+      if(_leaf STREQUAL "output")
+        get_filename_component(_parent "${_corpus}" DIRECTORY)
+        get_filename_component(_leaf "${_parent}" NAME)
+      endif()
+      add_test(NAME corpus-roundtrip/${_leaf}
+        COMMAND corpus_roundtrip_test --corpus=${_corpus})
+    endforeach()
   endif()
 endif()  # BROTLI_DISABLE_TESTS
 

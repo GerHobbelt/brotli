@@ -22,3 +22,7 @@ __pycache__/
 
 # Benchmark corpus
 benchmark/corpus/
+
+# A/B benchmark harness outputs and worktree/build cache
+benchmark/results/
+.ab-cache/
