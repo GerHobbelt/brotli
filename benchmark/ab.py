@@ -31,6 +31,7 @@ import hashlib
 import json
 import os
 import shutil
+import signal
 import statistics
 import subprocess
 import sys
@@ -46,6 +47,19 @@ def run(cmd, *, capture=False, env=None, check=True, cwd=None):
         stdout=subprocess.PIPE if capture else None,
         stderr=subprocess.STDOUT if capture else None,
         text=True)
+
+
+def describe_exit(returncode):
+    """Human-readable description of a process return code. A negative code
+    means the process was killed by a signal; name it (e.g. SIGSEGV) instead
+    of printing the raw negative number."""
+    if returncode < 0:
+        try:
+            name = signal.Signals(-returncode).name
+        except ValueError:
+            name = f"signal {-returncode}"
+        return f"killed by {name} (signal {-returncode})"
+    return f"exited with code {returncode}"
 
 
 def git(args, cwd=None):
@@ -66,7 +80,7 @@ def run_tee(cmd, *, env, log_path):
         proc.wait()
     sys.stdout.flush()
     if proc.returncode != 0:
-        sys.exit(f"command failed (exit {proc.returncode}): {' '.join(cmd)}")
+        sys.exit(f"command {describe_exit(proc.returncode)}: {' '.join(cmd)}")
 
 
 def sha256_file(path):
@@ -357,7 +371,18 @@ def run_one(args, version, which, record_dir, wrapper):
     if args.mode == "digest":
         out = record_dir / f"{which}.digest.txt"
         cmd += [f"--digest={out}"]
-        run(cmd, env=env)
+        try:
+            run(cmd, env=env)
+        except subprocess.CalledProcessError as exc:
+            sys.exit(
+                f"\n{which} run ({version['ref']} @ {version['sha'][:12]}) "
+                f"{describe_exit(exc.returncode)}.\n"
+                f"  binary:  {binary}\n"
+                f"  command: {' '.join(cmd)}\n"
+                f"The benchmark binary faulted before writing its digest, so "
+                f"no comparison is possible. A SIGSEGV usually means this "
+                f"build has a bug (e.g. an out-of-bounds read from a bad hash "
+                f"key); try running the command above under gdb.")
         artifacts["digest"] = str(out)
 
     elif args.mode in ("time", "counters"):
