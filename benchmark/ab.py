@@ -274,10 +274,59 @@ def build_wrapper(core, no_pin, no_aslr):
 # --- build ------------------------------------------------------------------
 
 
+def _cmake_build(src, build, ref, tag):
+    """Configure + build brotli_benchmark from source dir `src` into `build`."""
+    build.mkdir(parents=True, exist_ok=True)
+    log_path = build / "ab-build.log"
+    print(f"  building {ref} ({tag}); output -> {log_path}", file=sys.stderr)
+    steps = [
+        # Release optimization plus -g: debug info lets pprof show per-source-
+        # line samples. -g does not change generated code, so timing runs are
+        # unaffected -- it only adds DWARF sections. Re-running configure also
+        # re-globs sources (picks up added/removed files in a working tree).
+        ["cmake", "-B", str(build), "-S", str(src),
+         "-DCMAKE_BUILD_TYPE=Release", "-DBROTLI_BUILD_BENCHMARKS=ON",
+         "-DBROTLI_DISABLE_TESTS=ON",
+         "-DCMAKE_C_FLAGS=-g", "-DCMAKE_CXX_FLAGS=-g"],
+        ["cmake", "--build", str(build), "-j", str(os.cpu_count()),
+         "--target", "brotli_benchmark"],
+    ]
+    chunks = []
+    for step in steps:
+        r = run(step, capture=True, check=False)
+        chunks.append(f"$ {' '.join(step)}\n{r.stdout}")
+        if r.returncode != 0:
+            log_path.write_text("".join(chunks))
+            sys.stderr.write("".join(chunks))
+            sys.exit(f"build failed for {ref} ({tag}); see {log_path}")
+    log_path.write_text("".join(chunks))
+
+
 def build_version(repo_root, ref):
-    """Resolve ref -> sha, materialize a worktree, build, return info dict."""
-    sha = git(["rev-parse", ref], cwd=repo_root)
+    """Build a benchmarkable version and return an info dict.
+
+    A normal ref is resolved to a SHA and materialized as a detached worktree,
+    cached by SHA. The pseudo-ref WORKTREE builds the live (possibly
+    uncommitted) working tree in place; since that can change between runs it is
+    always rebuilt (cmake is incremental, so this is cheap), and its provenance
+    is recorded as HEAD plus a hash of `git diff HEAD`."""
     cache = repo_root / ".ab-cache"
+    if ref == "WORKTREE":
+        head = git(["rev-parse", "HEAD"], cwd=repo_root)
+        diff_sha = hashlib.sha256(
+            git(["diff", "HEAD"], cwd=repo_root).encode()).hexdigest()
+        build = cache / "build" / "worktree"
+        binary = build / "benchmark" / "brotli_benchmark"
+        _cmake_build(repo_root, build, ref, f"{head[:12]}+wt")
+        if not binary.exists():
+            sys.exit(f"build produced no benchmark binary at {binary}")
+        return {
+            "ref": ref, "sha": head, "worktree_diff_sha256": diff_sha,
+            "worktree": str(repo_root), "build_dir": str(build),
+            "binary": str(binary), "binary_sha256": sha256_file(binary),
+        }
+
+    sha = git(["rev-parse", ref], cwd=repo_root)
     wt = cache / "wt" / sha
     build = cache / "build" / sha
     binary = build / "benchmark" / "brotli_benchmark"
@@ -288,30 +337,7 @@ def build_version(repo_root, ref):
             cwd=repo_root, capture=True)
 
     if not binary.exists():
-        build.mkdir(parents=True, exist_ok=True)
-        log_path = build / "ab-build.log"
-        print(f"  building {ref} ({sha[:12]}); output -> {log_path}",
-              file=sys.stderr)
-        steps = [
-            # Release optimization plus -g: debug info lets pprof show
-            # per-source-line samples. -g does not change generated code, so
-            # timing runs are unaffected -- it only adds DWARF sections.
-            ["cmake", "-B", str(build), "-S", str(wt),
-             "-DCMAKE_BUILD_TYPE=Release", "-DBROTLI_BUILD_BENCHMARKS=ON",
-             "-DBROTLI_DISABLE_TESTS=ON",
-             "-DCMAKE_C_FLAGS=-g", "-DCMAKE_CXX_FLAGS=-g"],
-            ["cmake", "--build", str(build), "-j", str(os.cpu_count()),
-             "--target", "brotli_benchmark"],
-        ]
-        chunks = []
-        for step in steps:
-            r = run(step, capture=True, check=False)
-            chunks.append(f"$ {' '.join(step)}\n{r.stdout}")
-            if r.returncode != 0:
-                log_path.write_text("".join(chunks))
-                sys.stderr.write("".join(chunks))
-                sys.exit(f"build failed for {ref} ({sha[:12]}); see {log_path}")
-        log_path.write_text("".join(chunks))
+        _cmake_build(wt, build, ref, sha[:12])
 
     if not binary.exists():
         sys.exit(f"build produced no benchmark binary at {binary}")
@@ -346,9 +372,12 @@ def corpus_fingerprint(corpus):
 # --- running a version ------------------------------------------------------
 
 
-def base_args(args, corpus):
-    return [f"--corpus={corpus}", f"--quality={args.quality}",
-            f"--lgwin={args.lgwin}"]
+def base_args(args, corpus, opt):
+    a = [f"--corpus={corpus}", f"--quality={args.quality}",
+         f"--lgwin={args.lgwin}"]
+    if opt:
+        a.append("--opt")  # BROTLI_PARAM_OPT_WRITER=1
+    return a
 
 
 def find_libprofiler():
@@ -359,13 +388,13 @@ def find_libprofiler():
     return None
 
 
-def run_one(args, version, which, record_dir, wrapper):
-    """Run one version in the selected mode. Returns artifact paths."""
+def run_one(args, version, which, record_dir, wrapper, opt):
+    """Run one variant in the selected mode. Returns artifact paths."""
     env = dict(os.environ)
     env["LD_LIBRARY_PATH"] = version["build_dir"]  # use THIS version's libs
     binary = version["binary"]
     corpus = args.corpus
-    cmd = list(wrapper) + [binary] + base_args(args, corpus)
+    cmd = list(wrapper) + [binary] + base_args(args, corpus, opt)
     artifacts = {}
 
     if args.mode == "digest":
@@ -413,7 +442,7 @@ def run_one(args, version, which, record_dir, wrapper):
         # installed, killing it with "Profiling timer expired".
         shim = ["env", f"LD_PRELOAD={lib}", f"CPUPROFILE={out}",
                 "CPUPROFILE_FREQUENCY=1000"]
-        cmd = (list(wrapper) + shim + [binary] + base_args(args, corpus) +
+        cmd = (list(wrapper) + shim + [binary] + base_args(args, corpus, opt) +
                [f"--benchmark_repetitions={args.repetitions}"])
         console = record_dir / f"{which}.console.txt"
         run_tee(cmd, env=env, log_path=console)
@@ -450,55 +479,87 @@ def summarize_json(path):
     }
 
 
-def compare_timing(record_dir, base_json, cand_json):
-    b = summarize_json(base_json)
-    c = summarize_json(cand_json)
-    out = {"baseline": b, "candidate": c}
-    if b["median_real_time"] and c["median_real_time"]:
-        speedup = b["median_real_time"] / c["median_real_time"]
-        out["candidate_speedup"] = speedup
-        print(f"\n  baseline : {b['median_real_time']:.2f} {b['time_unit']}"
-              f"  ({b['median_MBps'] or 0:.1f} MB/s, ratio "
-              f"{b['compression_ratio']:.4f})")
-        print(f"  candidate: {c['median_real_time']:.2f} {c['time_unit']}"
-              f"  ({c['median_MBps'] or 0:.1f} MB/s, ratio "
-              f"{c['compression_ratio']:.4f})")
-        print(f"  speedup  : {speedup:.4f}x  "
-              f"({(speedup - 1) * 100:+.2f}%)\n")
-    # Use google-benchmark's compare.py too, if it's available with deps.
-    cmp_py = next(Path(record_dir).glob("../../.ab-cache/build/*/"
-                                        "_deps/benchmark-src/tools/compare.py"),
-                  None)
-    if cmp_py:
-        res = run([sys.executable, str(cmp_py), "benchmarks",
-                   base_json, cand_json], capture=True, check=False)
-        (Path(record_dir) / "compare_py.txt").write_text(res.stdout or "")
-    return out
+def variant_tag(v):
+    """Short human label for a variant: ref@sha plus an opt marker."""
+    return f"{v['ref']}@{v['version']['sha'][:9]}" + ("  opt" if v["opt"] else "")
 
 
-def compare_digests(base_digest, cand_digest):
+def compare_timing(record_dir, variants):
+    """Print a timing table across N variants (delta vs first and, for a chain,
+    vs the previous variant). Speedup > 0 means faster than the comparator."""
+    rows = [(v, summarize_json(v["artifacts"]["json"])) for v in variants]
+    base_v, base = rows[0]
+    print()
+    out = []
+    prev_rt = None
+    for i, (v, s) in enumerate(rows):
+        rt = s["median_real_time"]
+        line = (f"  {v['label']:<8}{variant_tag(v):<24} "
+                f"{rt:9.2f} {s['time_unit']}  "
+                f"({s['median_MBps'] or 0:6.1f} MB/s, ratio "
+                f"{s['compression_ratio']:.4f})")
+        rec = {"label": v["label"], "ref": v["ref"], "opt": v["opt"],
+               "sha": v["version"]["sha"], **s}
+        if i > 0 and base["median_real_time"] and rt:
+            vs_first = base["median_real_time"] / rt
+            line += f"   {(vs_first - 1) * 100:+.2f}% vs {base_v['label']}"
+            rec["speedup_vs_first"] = vs_first
+            if len(rows) > 2 and prev_rt:
+                vs_prev = prev_rt / rt
+                line += f"  ({(vs_prev - 1) * 100:+.2f}% vs prev)"
+                rec["speedup_vs_prev"] = vs_prev
+        print(line)
+        out.append(rec)
+        prev_rt = rt
+    print()
+    # google-benchmark's compare.py for the simple 2-variant case, if available.
+    if len(rows) == 2:
+        cmp_py = next(Path(record_dir).glob(
+            "../../.ab-cache/build/*/_deps/benchmark-src/tools/compare.py"),
+            None)
+        if cmp_py:
+            res = run([sys.executable, str(cmp_py), "benchmarks",
+                       rows[0][0]["artifacts"]["json"],
+                       rows[1][0]["artifacts"]["json"]],
+                      capture=True, check=False)
+            (Path(record_dir) / "compare_py.txt").write_text(res.stdout or "")
+    return {"variants": out}
+
+
+def compare_digests(variants):
+    """Check every variant's per-file output against the first; report identity.
+    For a perf-only change (or the opt toggle) all variants must match."""
     def load(p):
         d = {}
         for line in Path(p).read_text().splitlines():
             name, length, h = line.split("\t")
             d[name] = (length, h)
         return d
-    b, c = load(base_digest), load(cand_digest)
-    diffs = [n for n in b if n in c and b[n] != c[n]]
-    only_b = sorted(set(b) - set(c))
-    only_c = sorted(set(c) - set(b))
-    identical = not diffs and not only_b and not only_c
-    if identical:
-        print(f"\n  BIT-IDENTICAL: all {len(b)} files match.\n")
-    else:
-        print(f"\n  NOT bit-identical: {len(diffs)} differing files, "
-              f"{len(only_b)} only-baseline, {len(only_c)} only-candidate.")
-        for n in diffs[:10]:
-            print(f"    {n}: baseline {b[n]}  candidate {c[n]}")
-        print()
-    return {"identical": identical, "num_differing": len(diffs),
-            "differing_sample": diffs[:50],
-            "only_baseline": only_b[:50], "only_candidate": only_c[:50]}
+    rows = [(v, load(v["artifacts"]["digest"])) for v in variants]
+    base_v, base = rows[0]
+    print()
+    all_identical = True
+    pairs = []
+    for v, d in rows[1:]:
+        diffs = [n for n in base if n in d and base[n] != d[n]]
+        only_b = sorted(set(base) - set(d))
+        only_c = sorted(set(d) - set(base))
+        identical = not diffs and not only_b and not only_c
+        all_identical = all_identical and identical
+        if identical:
+            print(f"  {v['label']} ({variant_tag(v)}) vs {base_v['label']}: "
+                  f"BIT-IDENTICAL ({len(base)} files)")
+        else:
+            print(f"  {v['label']} ({variant_tag(v)}) vs {base_v['label']}: "
+                  f"NOT identical -- {len(diffs)} differ, {len(only_b)} "
+                  f"only-{base_v['label']}, {len(only_c)} only-{v['label']}")
+            for n in diffs[:10]:
+                print(f"    {n}: {base[n]} vs {d[n]}")
+        pairs.append({"label": v["label"], "vs": base_v["label"],
+                      "identical": identical, "num_differing": len(diffs),
+                      "differing_sample": diffs[:50]})
+    print()
+    return {"all_identical": all_identical, "pairs": pairs}
 
 
 # --- main -------------------------------------------------------------------
@@ -506,9 +567,20 @@ def compare_digests(base_digest, cand_digest):
 
 def main():
     ap = argparse.ArgumentParser(
-        description="A/B benchmark the brotli encoder across two git refs.")
-    ap.add_argument("--baseline", required=True, help="git ref for version A")
-    ap.add_argument("--candidate", required=True, help="git ref for version B")
+        description="Benchmark/compare the brotli encoder across git refs and "
+                    "the BROTLI_PARAM_OPT_WRITER toggle.")
+    ap.add_argument("refs", nargs="*", default=[],
+                    help="git refs to benchmark: none=HEAD, one=just measure, "
+                         "two=A/B, N=chain (table of deltas). The pseudo-ref "
+                         "WORKTREE builds the current (uncommitted) tree.")
+    ap.add_argument("--baseline", help="alias for the first positional ref")
+    ap.add_argument("--candidate", help="alias for the second positional ref")
+    ap.add_argument("--opt", action="store_true",
+                    help="run every ref with the optimized path on "
+                         "(BROTLI_PARAM_OPT_WRITER=1)")
+    ap.add_argument("--opt-ab", dest="opt_ab", action="store_true",
+                    help="one build, compare opt OFF vs ON at a single ref "
+                         "(default HEAD) -- the production toggle A/B")
     ap.add_argument("--corpus", required=True, help="corpus directory")
     ap.add_argument("--quality", type=int, default=6)
     ap.add_argument("--lgwin", type=int, default=22)
@@ -524,8 +596,9 @@ def main():
     ap.add_argument("--tune", action="store_true",
                     help="set performance governor + disable boost (root)")
     ap.add_argument("--allow-dirty", action="store_true",
-                    help="proceed even if the working tree has uncommitted "
-                         "changes (which are NOT benchmarked)")
+                    help="benchmark committed SHAs even with a dirty tree "
+                         "(uncommitted changes excluded; use WORKTREE to "
+                         "include them)")
     args = ap.parse_args()
 
     repo_root = Path(git(["rev-parse", "--show-toplevel"])).resolve()
@@ -534,21 +607,43 @@ def main():
     if not Path(corpus).is_dir():
         sys.exit(f"corpus directory not found: {corpus}")
 
+    # Resolve refs. --baseline/--candidate are aliases for two positional refs.
+    refs = list(args.refs)
+    if args.baseline or args.candidate:
+        if refs:
+            sys.exit("pass refs positionally OR via --baseline/--candidate")
+        if not (args.baseline and args.candidate):
+            sys.exit("--baseline and --candidate must be given together")
+        refs = [args.baseline, args.candidate]
+    if not refs:
+        refs = ["HEAD"]
+
+    # Expand to variants: (label, ref, opt).
+    if args.opt_ab:
+        if len(refs) > 1:
+            sys.exit("--opt-ab compares one ref with opt off vs on; "
+                     "pass at most one ref")
+        specs = [("orig", refs[0], False), ("opt", refs[0], True)]
+    else:
+        specs = [(f"v{i}", r, args.opt) for i, r in enumerate(refs)]
+    using_worktree = any(r == "WORKTREE" for _, r, _ in specs)
+
     # Provenance gate: uncommitted changes to tracked files are not captured by
-    # SHA worktrees. Untracked files (editor swaps, __pycache__) don't affect a
-    # worktree build, so ignore them here.
+    # SHA worktrees. A WORKTREE variant is the deliberate way to benchmark them,
+    # so don't gate when one is requested.
     dirty = bool(git(["status", "--porcelain", "--untracked-files=no"],
                      cwd=repo_root))
     diff_sha = None
     if dirty:
         diff_sha = hashlib.sha256(
             git(["diff", "HEAD"], cwd=repo_root).encode()).hexdigest()
-        if not args.allow_dirty:
-            sys.exit("Working tree has uncommitted changes; they will NOT be "
-                     "benchmarked (versions are built from committed SHAs). "
-                     "Commit them, or pass --allow-dirty to proceed anyway.")
-        print("WARNING: working tree is dirty; uncommitted changes are NOT "
-              "included in either version.", file=sys.stderr)
+        if not using_worktree and not args.allow_dirty:
+            sys.exit("Working tree has uncommitted changes that SHA builds will "
+                     "NOT include. Use the WORKTREE ref to benchmark the working "
+                     "tree, commit the changes, or pass --allow-dirty.")
+        if not using_worktree:
+            print("WARNING: working tree is dirty; SHA builds do NOT include "
+                  "uncommitted changes.", file=sys.stderr)
 
     env_state = read_env_state()
     warn_if_noisy(env_state)
@@ -571,14 +666,20 @@ def main():
                 f"  - lower it:     sudo sysctl -w kernel.perf_event_paranoid=1"
                 f"  (persist in /etc/sysctl.d/)")
 
-    print(f"Building baseline ({args.baseline}) ...", file=sys.stderr)
-    baseline = build_version(repo_root, args.baseline)
-    print(f"Building candidate ({args.candidate}) ...", file=sys.stderr)
-    candidate = build_version(repo_root, args.candidate)
+    # Build each unique ref once (a ref can back two variants, e.g. --opt-ab).
+    builds = {}
+    for _, ref, _ in specs:
+        if ref not in builds:
+            print(f"Building {ref} ...", file=sys.stderr)
+            builds[ref] = build_version(repo_root, ref)
+    variants = [{"label": label, "ref": ref, "opt": opt,
+                 "version": builds[ref]}
+                for (label, ref, opt) in specs]
 
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    record_dir = (repo_root / "benchmark" / "results" /
-                  f"{stamp}__{baseline['sha'][:12]}_vs_{candidate['sha'][:12]}")
+    tags = "_".join(v["version"]["sha"][:8] + ("o" if v["opt"] else "")
+                    for v in variants)
+    record_dir = repo_root / "benchmark" / "results" / f"{stamp}__{tags}"
     record_dir.mkdir(parents=True, exist_ok=True)
 
     wrapper = build_wrapper(args.core, args.no_pin, args.no_aslr_disable)
@@ -587,10 +688,12 @@ def main():
         # Re-read env so the manifest reflects the actual (tuned) state.
         env_state = read_env_state()
         irq_before = read_irq_counts()
-        print(f"\n== baseline {baseline['sha'][:12]} ==", file=sys.stderr)
-        base_art = run_one(args, baseline, "baseline", record_dir, wrapper)
-        print(f"== candidate {candidate['sha'][:12]} ==", file=sys.stderr)
-        cand_art = run_one(args, candidate, "candidate", record_dir, wrapper)
+        for v in variants:
+            print(f"\n== {v['label']}: {v['ref']} "
+                  f"({v['version']['sha'][:12]}) opt={int(v['opt'])} ==",
+                  file=sys.stderr)
+            v["artifacts"] = run_one(args, v["version"], v["label"],
+                                     record_dir, wrapper, v["opt"])
         irq_after = read_irq_counts()
 
     # Isolation provenance: was the pinned core actually isolated, and did any
@@ -612,10 +715,9 @@ def main():
 
     comparison = None
     if args.mode in ("time", "counters"):
-        comparison = compare_timing(record_dir, base_art["json"],
-                                    cand_art["json"])
-    elif args.mode == "digest":
-        comparison = compare_digests(base_art["digest"], cand_art["digest"])
+        comparison = compare_timing(record_dir, variants)
+    elif args.mode == "digest" and len(variants) >= 2:
+        comparison = compare_digests(variants)
 
     compiler = run(["c++", "--version"], capture=True, check=False).stdout
     manifest = {
@@ -628,6 +730,7 @@ def main():
         "pinned_core": None if args.no_pin else args.core,
         "isolation": isolation,
         "mode": args.mode,
+        "opt_ab": args.opt_ab,
         "quality": args.quality,
         "lgwin": args.lgwin,
         "repetitions": args.repetitions,
@@ -636,8 +739,9 @@ def main():
         "compiler": (compiler or "").splitlines()[0] if compiler else None,
         "working_tree_dirty": dirty,
         "working_tree_diff_sha256": diff_sha,
-        "baseline": {**baseline, "artifacts": base_art},
-        "candidate": {**candidate, "artifacts": cand_art},
+        "variants": [{"label": v["label"], "ref": v["ref"], "opt": v["opt"],
+                      **v["version"], "artifacts": v["artifacts"]}
+                     for v in variants],
         "comparison": comparison,
     }
     (record_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))

@@ -54,19 +54,53 @@ are also supported (e.g. `--benchmark_repetitions=N`,
 
 ## A/B comparison: `ab.py`
 
-`ab.py` builds two git refs, runs them head-to-head, and writes a
-self-describing **run record** so it is never ambiguous which code version was
-benchmarked in which configuration on which corpus.
+`ab.py` builds one or more git refs, runs them under variance-reducing
+conditions, and writes a self-describing **run record** so it is never
+ambiguous which code version was benchmarked in which configuration on which
+corpus.
 
-Each version is checked out as a detached **git worktree keyed by commit SHA**
+Each ref is checked out as a detached **git worktree keyed by commit SHA**
 (cached under `.ab-cache/`, managed entirely by the script — you never touch
 it), built in Release, and run with its own `libbrotlienc.so` via an explicit
 `LD_LIBRARY_PATH`, so the encoder under test is unambiguously that version's
 code.
 
+### Refs (positional, 0–N)
+
 ```bash
-benchmark/ab.py --baseline master --candidate HEAD \
-  --corpus ~/Development/testdata/srp_desktop --quality 9 --core 3
+benchmark/ab.py [REF ...] --corpus DIR [options]
+```
+
+| Goal | Invocation |
+|---|---|
+| Benchmark HEAD | `ab.py` (refs default to `HEAD`) |
+| The current **working copy** (uncommitted) | `ab.py WORKTREE` |
+| A commit vs HEAD | `ab.py master HEAD` |
+| Two literal commits | `ab.py A B` |
+| Committed vs working copy | `ab.py HEAD WORKTREE` |
+| A whole optimization chain | `ab.py c1 c2 c3 c4` (table of Δ-vs-first and Δ-vs-prev) |
+
+`WORKTREE` is a pseudo-ref that builds the live (possibly uncommitted) tree in
+place; it is always rebuilt and recorded as `HEAD` + a hash of `git diff HEAD`,
+so it stays reproducible. `--baseline X --candidate Y` remain as aliases for two
+positional refs.
+
+### The opt toggle (`BROTLI_PARAM_OPT_WRITER`)
+
+The encoder carries a runtime-selectable "optimized" metablock-writer path (see
+`c/enc/*_opt.c`), toggled by `BROTLI_PARAM_OPT_WRITER` (the benchmark's `--opt`
+flag). Two ab.py flags drive it:
+
+- `--opt` — run **every** ref on the optimized path (benchmark how the optimized
+  stack evolves across a chain). Default off = the reference path.
+- `--opt-ab` — one build, compare **opt OFF vs ON** at a single ref (default
+  HEAD). This is the in-binary production A/B: same codegen, only the code path
+  differs, and it needs no second commit.
+
+```bash
+# how much the optimized writer buys, on the current working copy:
+benchmark/ab.py WORKTREE --opt-ab --mode digest   # must be bit-identical
+benchmark/ab.py WORKTREE --opt-ab                 # then time it
 ```
 
 ### Modes (`--mode`)
@@ -106,8 +140,8 @@ per-CPU `/proc/interrupts` deltas for the pinned core and its sibling in the
 manifest. With this set up, A/B runs here see <0.1% run-to-run variance.
 
 Other flags: `--lgwin`, `--repetitions`, `--no-pin`, `--no-aslr-disable`,
-`--allow-dirty` (proceed despite uncommitted tracked changes, which are *not*
-included since builds come from committed SHAs).
+`--allow-dirty` (benchmark committed SHAs even with a dirty tree; uncommitted
+changes are *excluded* — use the `WORKTREE` ref to include them).
 
 ### Run records
 
