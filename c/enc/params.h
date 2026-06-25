@@ -37,6 +37,9 @@ typedef struct BrotliEncoderParams {
   size_t size_hint;
   BROTLI_BOOL disable_literal_context_modeling;
   BROTLI_BOOL large_window;
+  /* Experimental: route metablock build+store through the optimized copies
+     (metablock_opt.c / brotli_bit_stream_opt.c) instead of the originals. */
+  BROTLI_BOOL opt_writer;
   BrotliHasherParams hasher;
   BrotliDistanceParams dist;
   /* TODO(eustas): rename to BrotliShared... */

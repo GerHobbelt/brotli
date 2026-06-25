@@ -42,6 +42,7 @@ static int g_quality = 6;
 static int g_lgwin = BROTLI_DEFAULT_WINDOW;
 static std::string g_corpus_dir;
 static std::string g_digest_path;
+static int g_opt_writer = 0;  /* BROTLI_PARAM_OPT_WRITER toggle (--opt) */
 
 /* Encoder mode shared by the benchmark loop and the --digest mode, so a digest
    reflects exactly the bytes the benchmark would compress. */
@@ -87,6 +88,35 @@ static void LoadCorpus(const std::string& dir) {
           g_corpus.size(), g_corpus_total_size / (1024.0 * 1024.0));
 }
 
+/* Compress one buffer via the streaming API. This mirrors
+   BrotliEncoderCompress (quality/lgwin/mode/size_hint then a single
+   OPERATION_FINISH with all input available) so output is identical, but lets
+   us also set BROTLI_PARAM_OPT_WRITER. Returns true on success and updates
+   *output_size to the compressed length. */
+static bool EncodeOneFile(const uint8_t* input, size_t input_size,
+                          uint8_t* output, size_t* output_size) {
+  BrotliEncoderState* s = BrotliEncoderCreateInstance(nullptr, nullptr, nullptr);
+  if (!s) return false;
+  BrotliEncoderSetParameter(s, BROTLI_PARAM_QUALITY, (uint32_t)g_quality);
+  BrotliEncoderSetParameter(s, BROTLI_PARAM_LGWIN, (uint32_t)g_lgwin);
+  BrotliEncoderSetParameter(s, BROTLI_PARAM_MODE, (uint32_t)g_mode);
+  BrotliEncoderSetParameter(s, BROTLI_PARAM_SIZE_HINT, (uint32_t)input_size);
+  if (g_opt_writer) {
+    BrotliEncoderSetParameter(s, BROTLI_PARAM_OPT_WRITER, 1);
+  }
+  size_t avail_in = input_size;
+  const uint8_t* next_in = input;
+  size_t avail_out = *output_size;
+  uint8_t* next_out = output;
+  BROTLI_BOOL ok = BrotliEncoderCompressStream(
+      s, BROTLI_OPERATION_FINISH, &avail_in, &next_in,
+      &avail_out, &next_out, nullptr);
+  bool finished = ok && BrotliEncoderIsFinished(s) && avail_in == 0;
+  *output_size -= avail_out;
+  BrotliEncoderDestroyInstance(s);
+  return finished;
+}
+
 /* FNV-1a 64-bit hash of a byte buffer. */
 static uint64_t Fnv1a64(const uint8_t* data, size_t len) {
   uint64_t h = 0xcbf29ce484222325ULL;
@@ -112,9 +142,8 @@ static int WriteDigest(const std::string& path) {
     if (max_size == 0) max_size = cf.data.size() * 2;
     std::vector<uint8_t> compressed(max_size);
     size_t encoded_size = max_size;
-    BROTLI_BOOL ok = BrotliEncoderCompress(
-        g_quality, g_lgwin, g_mode,
-        cf.data.size(), cf.data.data(), &encoded_size, compressed.data());
+    bool ok = EncodeOneFile(cf.data.data(), cf.data.size(),
+                            compressed.data(), &encoded_size);
     if (!ok) {
       fprintf(stderr, "Error: compression failed for %s\n", cf.name.c_str());
       fclose(out);
@@ -152,10 +181,8 @@ static void BM_BrotliEncode(benchmark::State& state) {
     total_compressed = 0;
     for (size_t i = 0; i < g_corpus.size(); i++) {
       size_t encoded_size = max_sizes[i];
-      BROTLI_BOOL ok = BrotliEncoderCompress(
-          g_quality, g_lgwin, g_mode,
-          g_corpus[i].data.size(), g_corpus[i].data.data(),
-          &encoded_size, output_bufs[i].data());
+      bool ok = EncodeOneFile(g_corpus[i].data.data(), g_corpus[i].data.size(),
+                              output_bufs[i].data(), &encoded_size);
       if (!ok) {
         state.SkipWithError("BrotliEncoderCompress failed");
         return;
@@ -172,6 +199,7 @@ static void BM_BrotliEncode(benchmark::State& state) {
                  static_cast<double>(g_corpus_total_size);
   state.counters["CompressionRatio"] = ratio;
   state.counters["Quality"] = g_quality;
+  state.counters["Opt"] = g_opt_writer;
   state.counters["InputMB"] =
       static_cast<double>(g_corpus_total_size) / (1024.0 * 1024.0);
   state.counters["CompressedMB"] =
@@ -200,6 +228,10 @@ static void ParseCustomFlags(int* argc, char** argv) {
       g_corpus_dir = argv[i] + 9;
     } else if (strncmp(argv[i], "--digest=", 9) == 0) {
       g_digest_path = argv[i] + 9;
+    } else if (strcmp(argv[i], "--opt") == 0) {
+      g_opt_writer = 1;
+    } else if (strncmp(argv[i], "--opt=", 6) == 0) {
+      g_opt_writer = atoi(argv[i] + 6);
     } else {
       argv[dst++] = argv[i];
     }
@@ -231,7 +263,8 @@ int main(int argc, char** argv) {
   }
 
   fprintf(stderr, "Corpus: %s\n", g_corpus_dir.c_str());
-  fprintf(stderr, "Quality: %d, lgwin: %d\n", g_quality, g_lgwin);
+  fprintf(stderr, "Quality: %d, lgwin: %d, opt_writer: %d\n",
+          g_quality, g_lgwin, g_opt_writer);
   LoadCorpus(g_corpus_dir);
 
   if (g_corpus.empty()) {

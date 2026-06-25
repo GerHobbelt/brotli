@@ -261,7 +261,16 @@ typedef enum BrotliEncoderParameter {
    * Controls whether the encoder uses SIMD hashers.
    * See ::BrotliEncoderSimdHasher for options.
    */
-  BROTLI_PARAM_SIMD_HASHER = 12
+  BROTLI_PARAM_SIMD_HASHER = 12,
+  /**
+   * Experimental: select the optimized metablock writer path.
+   *
+   * When set to 1, metablock build+store is routed through the optimized
+   * copies (metablock_opt.c / brotli_bit_stream_opt.c) instead of the
+   * originals. Intended for A/B benchmarking the encoder optimizations within
+   * a single binary; output is identical to the default path.
+   */
+  BROTLI_PARAM_OPT_WRITER = 13
 } BrotliEncoderParameter;
 
 /**
