@@ -42,10 +42,22 @@ build-bench/benchmark/brotli_benchmark \
 - `--quality=N` — compression quality 0-11 (default: 6)
 - `--lgwin=N` — log2 window size (default: 22)
 - `--corpus=DIR` — corpus directory (loads all regular files in it)
+- `--dictionary=FILE` — attach a raw (LZ77 prefix) shared dictionary to every
+  encode. It is read and **prepared once at startup** (the hash-table build is
+  outside the timed loop, mirroring offline preparation); the measured path only
+  attaches the prepared result. Encoding always goes through the streaming API
+  (`BrotliEncoderCompressStream`), since the one-shot `BrotliEncoderCompress`
+  cannot take a custom dictionary.
+- `--opt` — route metablock build+store through the optimized writer path
+  (`BROTLI_PARAM_OPT_WRITER`); inert/bit-identical unless the branch carries the
+  optimized `*_opt.c` subtree
 - `--digest=FILE` — write per-file compressed-output hashes
   (`name<TAB>len<TAB>fnv64`) and exit without benchmarking; used to check that
   two encoder versions produce **bit-identical** output
 - `--benchmark_out=results.json --benchmark_out_format=json` — save results
+
+The `CompressionRatio` counter is reported as **times smaller**
+(input ÷ compressed, e.g. `4.75` = output is 4.75× smaller than the input).
 
 All [Google Benchmark flags](https://github.com/google/benchmark/blob/main/docs/user_guide.md)
 are also supported (e.g. `--benchmark_repetitions=N`,
@@ -140,8 +152,10 @@ per-CPU `/proc/interrupts` deltas for the pinned core and its sibling in the
 manifest. With this set up, A/B runs here see <0.1% run-to-run variance.
 
 Other flags: `--lgwin`, `--repetitions`, `--no-pin`, `--no-aslr-disable`,
-`--allow-dirty` (benchmark committed SHAs even with a dirty tree; uncommitted
-changes are *excluded* — use the `WORKTREE` ref to include them).
+`--dictionary FILE` (attach a raw shared dictionary to every encode; its path,
+size, and SHA-256 are recorded in the manifest), `--allow-dirty` (benchmark
+committed SHAs even with a dirty tree; uncommitted changes are *excluded* — use
+the `WORKTREE` ref to include them).
 
 ### Run records
 

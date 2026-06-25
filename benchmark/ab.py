@@ -377,6 +377,8 @@ def base_args(args, corpus, opt):
          f"--lgwin={args.lgwin}"]
     if opt:
         a.append("--opt")  # BROTLI_PARAM_OPT_WRITER=1
+    if args.dictionary:
+        a.append(f"--dictionary={args.dictionary}")
     return a
 
 
@@ -497,7 +499,7 @@ def compare_timing(record_dir, variants):
         line = (f"  {v['label']:<8}{variant_tag(v):<24} "
                 f"{rt:9.2f} {s['time_unit']}  "
                 f"({s['median_MBps'] or 0:6.1f} MB/s, ratio "
-                f"{s['compression_ratio']:.4f})")
+                f"{s['compression_ratio']:.4f}x)")
         rec = {"label": v["label"], "ref": v["ref"], "opt": v["opt"],
                "sha": v["version"]["sha"], **s}
         if i > 0 and base["median_real_time"] and rt:
@@ -582,6 +584,9 @@ def main():
                     help="one build, compare opt OFF vs ON at a single ref "
                          "(default HEAD) -- the production toggle A/B")
     ap.add_argument("--corpus", required=True, help="corpus directory")
+    ap.add_argument("--dictionary", help="raw (LZ77 prefix) shared-dictionary "
+                    "file to attach to every encode; prepared once, outside the "
+                    "timed loop")
     ap.add_argument("--quality", type=int, default=6)
     ap.add_argument("--lgwin", type=int, default=22)
     ap.add_argument("--mode", choices=["time", "counters", "pprof", "digest"],
@@ -606,6 +611,11 @@ def main():
     args.corpus = corpus
     if not Path(corpus).is_dir():
         sys.exit(f"corpus directory not found: {corpus}")
+    if args.dictionary:
+        dictionary = str(Path(args.dictionary).expanduser().resolve())
+        args.dictionary = dictionary
+        if not Path(dictionary).is_file():
+            sys.exit(f"dictionary file not found: {dictionary}")
 
     # Resolve refs. --baseline/--candidate are aliases for two positional refs.
     refs = list(args.refs)
@@ -736,6 +746,10 @@ def main():
         "repetitions": args.repetitions,
         "counters": args.counters if args.mode == "counters" else None,
         "corpus": {"path": corpus, **corpus_fingerprint(corpus)},
+        "dictionary": ({"path": args.dictionary,
+                        "size_bytes": Path(args.dictionary).stat().st_size,
+                        "sha256": sha256_file(args.dictionary)}
+                       if args.dictionary else None),
         "compiler": (compiler or "").splitlines()[0] if compiler else None,
         "working_tree_dirty": dirty,
         "working_tree_diff_sha256": diff_sha,

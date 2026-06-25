@@ -29,6 +29,10 @@ Essentials that are easy to forget:
 - Other modes: `--mode time` (default), `--mode counters`
   (`--counters CYCLES,...`), `--mode pprof`. Runs pin to isolated core 3;
   provenance lands in `benchmark/results/<timestamp>__.../manifest.json`.
+- **Shared dictionaries**: `ab.py --dictionary FILE` attaches a raw (LZ77 prefix)
+  dictionary to every encode (prepared once at startup, outside the timed loop).
+  The default corpus has a matching `~/Development/testdata/srp_desktop_256k.dict`.
+  Ratio is reported **times smaller** (input÷compressed).
 
 ## Builds
 
