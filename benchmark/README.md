@@ -153,7 +153,9 @@ manifest. With this set up, A/B runs here see <0.1% run-to-run variance.
 
 Other flags: `--lgwin`, `--repetitions`, `--no-pin`, `--no-aslr-disable`,
 `--dictionary FILE` (attach a raw shared dictionary to every encode; its path,
-size, and SHA-256 are recorded in the manifest), `--allow-dirty` (benchmark
+size, and SHA-256 are recorded in the manifest),
+`--bench-args "..."` (append arbitrary benchmark-binary flags to every variant,
+e.g. an experiment-branch flag the script doesn't know about), `--allow-dirty` (benchmark
 committed SHAs even with a dirty tree; uncommitted changes are *excluded* — use
 the `WORKTREE` ref to include them).
 

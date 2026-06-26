@@ -379,6 +379,8 @@ def base_args(args, corpus, opt):
         a.append("--opt")  # BROTLI_PARAM_OPT_WRITER=1
     if args.dictionary:
         a.append(f"--dictionary={args.dictionary}")
+    if args.bench_args:
+        a += args.bench_args.split()
     return a
 
 
@@ -587,6 +589,10 @@ def main():
     ap.add_argument("--dictionary", help="raw (LZ77 prefix) shared-dictionary "
                     "file to attach to every encode; prepared once, outside the "
                     "timed loop")
+    ap.add_argument("--bench-args", dest="bench_args", default="",
+                    help="extra args appended verbatim to the benchmark binary "
+                         "for every variant (e.g. '--dict-tree'); recorded in "
+                         "each variant's command in the manifest")
     ap.add_argument("--quality", type=int, default=6)
     ap.add_argument("--lgwin", type=int, default=22)
     ap.add_argument("--mode", choices=["time", "counters", "pprof", "digest"],
