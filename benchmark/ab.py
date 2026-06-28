@@ -392,10 +392,48 @@ def find_libprofiler():
     return None
 
 
+def find_tcmalloc():
+    for cand in ("/usr/lib/x86_64-linux-gnu/libtcmalloc_minimal.so",
+                 "/usr/lib/x86_64-linux-gnu/libtcmalloc_minimal.so.4",
+                 "/usr/lib/libtcmalloc_minimal.so",
+                 "/usr/local/lib/libtcmalloc_minimal.so"):
+        if Path(cand).exists():
+            return cand
+    return None
+
+
+def resolve_malloc(spec):
+    """Resolve --malloc to an LD_PRELOAD path (or None for the system allocator).
+
+    Default 'tcmalloc' avoids glibc's per-allocation trim/mmap churn, which on
+    this workload (a fresh encoder, hence a fresh multi-MB hash table, per file)
+    makes timings allocation-bound and non-monotonic in quality (a notorious q7
+    spike). tcmalloc pools and reuses the freed table, so timings reflect the
+    encoder, not the allocator -- and match a typical production allocator."""
+    if spec == "system":
+        return None
+    if spec == "tcmalloc":
+        p = find_tcmalloc()
+        if not p:
+            print("WARNING: --malloc tcmalloc, but libtcmalloc_minimal.so not "
+                  "found -- using the system allocator (timings may be "
+                  "allocation-bound; see q7). Install libtcmalloc-minimal4, or "
+                  "pass --malloc system to silence.", file=sys.stderr)
+        return p
+    if not Path(spec).exists():
+        sys.exit(f"--malloc preload library not found: {spec}")
+    return spec
+
+
 def run_one(args, version, which, record_dir, wrapper, opt):
     """Run one variant in the selected mode. Returns artifact paths."""
     env = dict(os.environ)
     env["LD_LIBRARY_PATH"] = version["build_dir"]  # use THIS version's libs
+    # Preload the chosen allocator (default tcmalloc). For pprof the preload is
+    # folded into the env-shim below instead, so it isn't lost.
+    if args.malloc_preload and args.mode != "pprof":
+        prev = env.get("LD_PRELOAD")
+        env["LD_PRELOAD"] = args.malloc_preload + (":" + prev if prev else "")
     binary = version["binary"]
     corpus = args.corpus
     cmd = list(wrapper) + [binary] + base_args(args, corpus, opt)
@@ -444,7 +482,8 @@ def run_one(args, version, which, record_dir, wrapper, opt):
         # ITIMER_PROF inside the wrapper; that timer survives execve() into the
         # benchmark and fires before the benchmark's own SIGPROF handler is
         # installed, killing it with "Profiling timer expired".
-        shim = ["env", f"LD_PRELOAD={lib}", f"CPUPROFILE={out}",
+        preload = f"{args.malloc_preload}:{lib}" if args.malloc_preload else lib
+        shim = ["env", f"LD_PRELOAD={preload}", f"CPUPROFILE={out}",
                 "CPUPROFILE_FREQUENCY=1000"]
         cmd = (list(wrapper) + shim + [binary] + base_args(args, corpus, opt) +
                [f"--benchmark_repetitions={args.repetitions}"])
@@ -593,6 +632,10 @@ def main():
                     help="extra args appended verbatim to the benchmark binary "
                          "for every variant (e.g. '--dict-tree'); recorded in "
                          "each variant's command in the manifest")
+    ap.add_argument("--malloc", default="tcmalloc",
+                    help="allocator to LD_PRELOAD: 'tcmalloc' (default), "
+                         "'system' (no preload), or a path to a preload .so. "
+                         "tcmalloc avoids glibc per-file alloc churn (see q7).")
     ap.add_argument("--quality", type=int, default=6)
     ap.add_argument("--lgwin", type=int, default=22)
     ap.add_argument("--mode", choices=["time", "counters", "pprof", "digest"],
@@ -611,6 +654,7 @@ def main():
                          "(uncommitted changes excluded; use WORKTREE to "
                          "include them)")
     args = ap.parse_args()
+    args.malloc_preload = resolve_malloc(args.malloc)
 
     repo_root = Path(git(["rev-parse", "--show-toplevel"])).resolve()
     corpus = str(Path(args.corpus).expanduser().resolve())
@@ -747,6 +791,7 @@ def main():
         "isolation": isolation,
         "mode": args.mode,
         "opt_ab": args.opt_ab,
+        "malloc": {"spec": args.malloc, "preload": args.malloc_preload},
         "quality": args.quality,
         "lgwin": args.lgwin,
         "repetitions": args.repetitions,

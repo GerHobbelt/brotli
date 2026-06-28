@@ -136,6 +136,16 @@ pass `--tune` (requires root) to set the `performance` governor and disable
 boost for the run, restoring them on exit. Without `--tune` the script warns if
 the governor isn't `performance` or boost is on.
 
+The benchmark also `LD_PRELOAD`s **tcmalloc** by default (`--malloc`, override
+with `system` or a path). The harness creates a fresh encoder — and thus a fresh
+multi-MB hash table — per file, and glibc's default per-allocation trim/mmap
+heuristic re-faults and re-zeroes that table on most files, making timings
+allocation-bound and **non-monotonic in quality** (a sharp q7 spike: ~+50% wall,
+~90% of it kernel page-zeroing). tcmalloc pools and reuses the freed table, so
+timings reflect the encoder rather than the allocator — and match what a typical
+production allocator (tcmalloc/jemalloc) does. The chosen allocator is recorded
+in the manifest (`malloc.preload`).
+
 For a near-dedicated core, isolate it (and its SMT sibling) at the kernel
 level. On this 8C/16T Ryzen, physical core 3 is logical CPUs 3 and 11; add to
 `GRUB_CMDLINE_LINUX_DEFAULT` and `update-grub` + reboot:
@@ -152,6 +162,7 @@ per-CPU `/proc/interrupts` deltas for the pinned core and its sibling in the
 manifest. With this set up, A/B runs here see <0.1% run-to-run variance.
 
 Other flags: `--lgwin`, `--repetitions`, `--no-pin`, `--no-aslr-disable`,
+`--malloc {tcmalloc,system,PATH}` (allocator to preload; default tcmalloc),
 `--dictionary FILE` (attach a raw shared dictionary to every encode; its path,
 size, and SHA-256 are recorded in the manifest),
 `--bench-args "..."` (append arbitrary benchmark-binary flags to every variant,
