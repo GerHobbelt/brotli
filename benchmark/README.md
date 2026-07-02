@@ -51,6 +51,9 @@ build-bench/benchmark/brotli_benchmark \
 - `--opt` — route metablock build+store through the optimized writer path
   (`BROTLI_PARAM_OPT_WRITER`); inert/bit-identical unless the branch carries the
   optimized `*_opt.c` subtree
+- `--opt-matchfinder` — route the H5 backward-reference search through its
+  optimized copy (`BROTLI_PARAM_OPT_MATCHFINDER`, the H15 hasher); inert unless
+  the branch carries the optimized match-finder copies
 - `--digest=FILE` — write per-file compressed-output hashes
   (`name<TAB>len<TAB>fnv64`) and exit without benchmarking; used to check that
   two encoder versions produce **bit-identical** output
@@ -97,22 +100,30 @@ place; it is always rebuilt and recorded as `HEAD` + a hash of `git diff HEAD`,
 so it stays reproducible. `--baseline X --candidate Y` remain as aliases for two
 positional refs.
 
-### The opt toggle (`BROTLI_PARAM_OPT_WRITER`)
+### The opt toggles (`BROTLI_PARAM_OPT_WRITER`, `BROTLI_PARAM_OPT_MATCHFINDER`)
 
-The encoder carries a runtime-selectable "optimized" metablock-writer path (see
-`c/enc/*_opt.c`), toggled by `BROTLI_PARAM_OPT_WRITER` (the benchmark's `--opt`
-flag). Two ab.py flags drive it:
+The encoder carries two runtime-selectable "optimized" paths: the
+metablock-writer copy (`c/enc/*_opt.c`, `BROTLI_PARAM_OPT_WRITER`, the
+benchmark's `--opt`) and the match-finder copy (the H15 hasher /
+`backward_references_opt_inc.h`, `BROTLI_PARAM_OPT_MATCHFINDER`, the
+benchmark's `--opt-matchfinder`). Four ab.py flags drive them:
 
-- `--opt` — run **every** ref on the optimized path (benchmark how the optimized
-  stack evolves across a chain). Default off = the reference path.
-- `--opt-ab` — one build, compare **opt OFF vs ON** at a single ref (default
-  HEAD). This is the in-binary production A/B: same codegen, only the code path
-  differs, and it needs no second commit.
+- `--opt` / `--opt-mf` — run **every** ref with the optimized writer /
+  match finder on (benchmark how the optimized stack evolves across a chain).
+  Default off = the reference paths.
+- `--opt-ab` / `--opt-mf-ab` — one build, compare that toggle **OFF vs ON** at
+  a single ref (default HEAD). This is the in-binary production A/B: same
+  codegen, only the code path differs, and it needs no second commit. The two
+  `*-ab` flags are mutually exclusive; hold the other toggle on in both
+  variants by combining, e.g. `--opt --opt-mf-ab`.
 
 ```bash
 # how much the optimized writer buys, on the current working copy:
 benchmark/ab.py WORKTREE --opt-ab --mode digest   # must be bit-identical
 benchmark/ab.py WORKTREE --opt-ab                 # then time it
+# how much the optimized match finder buys, with the writer opt held on:
+benchmark/ab.py WORKTREE --opt --opt-mf-ab --mode digest
+benchmark/ab.py WORKTREE --opt --opt-mf-ab
 ```
 
 ### Modes (`--mode`)
