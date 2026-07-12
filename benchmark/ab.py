@@ -372,13 +372,15 @@ def corpus_fingerprint(corpus):
 # --- running a version ------------------------------------------------------
 
 
-def base_args(args, corpus, opt, opt_mf):
+def base_args(args, corpus, opt, opt_mf, opt_bs):
     a = [f"--corpus={corpus}", f"--quality={args.quality}",
          f"--lgwin={args.lgwin}"]
     if opt:
         a.append("--opt")  # BROTLI_PARAM_OPT_WRITER=1
     if opt_mf:
         a.append("--opt-matchfinder")  # BROTLI_PARAM_OPT_MATCHFINDER=1
+    if opt_bs:
+        a.append("--opt-block-splitter")  # BROTLI_PARAM_OPT_BLOCK_SPLITTER=1
     if args.dictionary:
         a.append(f"--dictionary={args.dictionary}")
     if args.bench_args:
@@ -427,7 +429,8 @@ def resolve_malloc(spec):
     return spec
 
 
-def run_one(args, version, which, record_dir, wrapper, opt, opt_mf):
+def run_one(args, version, which, record_dir, wrapper, opt, opt_mf,
+            opt_bs):
     """Run one variant in the selected mode. Returns artifact paths."""
     env = dict(os.environ)
     env["LD_LIBRARY_PATH"] = version["build_dir"]  # use THIS version's libs
@@ -438,7 +441,8 @@ def run_one(args, version, which, record_dir, wrapper, opt, opt_mf):
         env["LD_PRELOAD"] = args.malloc_preload + (":" + prev if prev else "")
     binary = version["binary"]
     corpus = args.corpus
-    cmd = list(wrapper) + [binary] + base_args(args, corpus, opt, opt_mf)
+    cmd = (list(wrapper) + [binary]
+           + base_args(args, corpus, opt, opt_mf, opt_bs))
     artifacts = {}
 
     if args.mode == "digest":
@@ -488,7 +492,7 @@ def run_one(args, version, which, record_dir, wrapper, opt, opt_mf):
         shim = ["env", f"LD_PRELOAD={preload}", f"CPUPROFILE={out}",
                 "CPUPROFILE_FREQUENCY=1000"]
         cmd = (list(wrapper) + shim + [binary] +
-               base_args(args, corpus, opt, opt_mf) +
+               base_args(args, corpus, opt, opt_mf, opt_bs) +
                [f"--benchmark_repetitions={args.repetitions}"])
         console = record_dir / f"{which}.console.txt"
         run_tee(cmd, env=env, log_path=console)
@@ -529,7 +533,8 @@ def variant_tag(v):
     """Short human label for a variant: ref@sha plus opt markers."""
     return (f"{v['ref']}@{v['version']['sha'][:9]}"
             + ("  opt" if v["opt"] else "")
-            + ("  optmf" if v["opt_mf"] else ""))
+            + ("  optmf" if v["opt_mf"] else "")
+            + ("  optbs" if v["opt_bs"] else ""))
 
 
 def compare_timing(record_dir, variants):
@@ -547,7 +552,8 @@ def compare_timing(record_dir, variants):
                 f"({s['median_MBps'] or 0:6.1f} MB/s, ratio "
                 f"{s['compression_ratio']:.4f}x)")
         rec = {"label": v["label"], "ref": v["ref"], "opt": v["opt"],
-               "opt_mf": v["opt_mf"], "sha": v["version"]["sha"], **s}
+               "opt_mf": v["opt_mf"], "opt_bs": v["opt_bs"],
+               "sha": v["version"]["sha"], **s}
         if i > 0 and base["median_real_time"] and rt:
             vs_first = base["median_real_time"] / rt
             line += f"   {(vs_first - 1) * 100:+.2f}% vs {base_v['label']}"
@@ -617,7 +623,7 @@ def main():
     ap = argparse.ArgumentParser(
         description="Benchmark/compare the brotli encoder across git refs and "
                     "the BROTLI_PARAM_OPT_WRITER / BROTLI_PARAM_OPT_MATCHFINDER "
-                    "toggles.")
+                    "/ BROTLI_PARAM_OPT_BLOCK_SPLITTER toggles.")
     ap.add_argument("refs", nargs="*", default=[],
                     help="git refs to benchmark: none=HEAD, one=just measure, "
                          "two=A/B, N=chain (table of deltas). The pseudo-ref "
@@ -637,6 +643,13 @@ def main():
                     help="one build, compare matchfinder-opt OFF vs ON at a "
                          "single ref; combine with --opt to hold the writer "
                          "on in both variants")
+    ap.add_argument("--opt-bs", dest="opt_bs", action="store_true",
+                    help="run every ref with the optimized HQ block splitter "
+                         "on (BROTLI_PARAM_OPT_BLOCK_SPLITTER=1)")
+    ap.add_argument("--opt-bs-ab", dest="opt_bs_ab", action="store_true",
+                    help="one build, compare block-splitter-opt OFF vs ON at "
+                         "a single ref; combine with --opt/--opt-mf to hold "
+                         "the other toggles on in both variants")
     ap.add_argument("--corpus", required=True, help="corpus directory")
     ap.add_argument("--dictionary", help="raw (LZ77 prefix) shared-dictionary "
                     "file to attach to every encode; prepared once, outside the "
@@ -691,28 +704,35 @@ def main():
     if not refs:
         refs = ["HEAD"]
 
-    # Expand to variants: (label, ref, opt_writer, opt_mf). Each *-ab flag
-    # A/Bs its own toggle at one ref; the other toggle can be held on for both
-    # variants via --opt / --opt-mf.
-    if args.opt_ab and args.opt_mf_ab:
-        sys.exit("--opt-ab and --opt-mf-ab are mutually exclusive; A/B one "
-                 "toggle at a time (hold the other on via --opt/--opt-mf)")
+    # Expand to variants: (label, ref, opt_writer, opt_mf, opt_bs). Each *-ab
+    # flag A/Bs its own toggle at one ref; the other toggles can be held on
+    # for both variants via --opt / --opt-mf / --opt-bs.
+    if sum([args.opt_ab, args.opt_mf_ab, args.opt_bs_ab]) > 1:
+        sys.exit("--opt-ab, --opt-mf-ab and --opt-bs-ab are mutually "
+                 "exclusive; A/B one toggle at a time (hold the others on "
+                 "via --opt/--opt-mf/--opt-bs)")
     if args.opt_ab:
         if len(refs) > 1:
             sys.exit("--opt-ab compares one ref with writer-opt off vs on; "
                      "pass at most one ref")
-        specs = [("orig", refs[0], False, args.opt_mf),
-                 ("opt", refs[0], True, args.opt_mf)]
+        specs = [("orig", refs[0], False, args.opt_mf, args.opt_bs),
+                 ("opt", refs[0], True, args.opt_mf, args.opt_bs)]
     elif args.opt_mf_ab:
         if len(refs) > 1:
             sys.exit("--opt-mf-ab compares one ref with matchfinder-opt off "
                      "vs on; pass at most one ref")
-        specs = [("orig", refs[0], args.opt, False),
-                 ("optmf", refs[0], args.opt, True)]
+        specs = [("orig", refs[0], args.opt, False, args.opt_bs),
+                 ("optmf", refs[0], args.opt, True, args.opt_bs)]
+    elif args.opt_bs_ab:
+        if len(refs) > 1:
+            sys.exit("--opt-bs-ab compares one ref with block-splitter-opt "
+                     "off vs on; pass at most one ref")
+        specs = [("orig", refs[0], args.opt, args.opt_mf, False),
+                 ("optbs", refs[0], args.opt, args.opt_mf, True)]
     else:
-        specs = [(f"v{i}", r, args.opt, args.opt_mf)
+        specs = [(f"v{i}", r, args.opt, args.opt_mf, args.opt_bs)
                  for i, r in enumerate(refs)]
-    using_worktree = any(r == "WORKTREE" for _, r, _, _ in specs)
+    using_worktree = any(r == "WORKTREE" for _, r, _, _, _ in specs)
 
     # Provenance gate: uncommitted changes to tracked files are not captured by
     # SHA worktrees. A WORKTREE variant is the deliberate way to benchmark them,
@@ -754,17 +774,18 @@ def main():
 
     # Build each unique ref once (a ref can back two variants, e.g. --opt-ab).
     builds = {}
-    for _, ref, _, _ in specs:
+    for _, ref, _, _, _ in specs:
         if ref not in builds:
             print(f"Building {ref} ...", file=sys.stderr)
             builds[ref] = build_version(repo_root, ref)
     variants = [{"label": label, "ref": ref, "opt": opt, "opt_mf": opt_mf,
-                 "version": builds[ref]}
-                for (label, ref, opt, opt_mf) in specs]
+                 "opt_bs": opt_bs, "version": builds[ref]}
+                for (label, ref, opt, opt_mf, opt_bs) in specs]
 
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     tags = "_".join(v["version"]["sha"][:8] + ("o" if v["opt"] else "")
                     + ("m" if v["opt_mf"] else "")
+                    + ("b" if v["opt_bs"] else "")
                     for v in variants)
     record_dir = repo_root / "benchmark" / "results" / f"{stamp}__{tags}"
     record_dir.mkdir(parents=True, exist_ok=True)
@@ -778,11 +799,11 @@ def main():
         for v in variants:
             print(f"\n== {v['label']}: {v['ref']} "
                   f"({v['version']['sha'][:12]}) opt={int(v['opt'])} "
-                  f"optmf={int(v['opt_mf'])} ==",
+                  f"optmf={int(v['opt_mf'])} optbs={int(v['opt_bs'])} ==",
                   file=sys.stderr)
             v["artifacts"] = run_one(args, v["version"], v["label"],
                                      record_dir, wrapper, v["opt"],
-                                     v["opt_mf"])
+                                     v["opt_mf"], v["opt_bs"])
         irq_after = read_irq_counts()
 
     # Isolation provenance: was the pinned core actually isolated, and did any
@@ -821,6 +842,7 @@ def main():
         "mode": args.mode,
         "opt_ab": args.opt_ab,
         "opt_mf_ab": args.opt_mf_ab,
+        "opt_bs_ab": args.opt_bs_ab,
         "malloc": {"spec": args.malloc, "preload": args.malloc_preload},
         "quality": args.quality,
         "lgwin": args.lgwin,
@@ -835,7 +857,7 @@ def main():
         "working_tree_dirty": dirty,
         "working_tree_diff_sha256": diff_sha,
         "variants": [{"label": v["label"], "ref": v["ref"], "opt": v["opt"],
-                      "opt_mf": v["opt_mf"],
+                      "opt_mf": v["opt_mf"], "opt_bs": v["opt_bs"],
                       **v["version"], "artifacts": v["artifacts"]}
                      for v in variants],
         "comparison": comparison,

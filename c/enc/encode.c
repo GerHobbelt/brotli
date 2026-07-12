@@ -123,6 +123,11 @@ BROTLI_BOOL BrotliEncoderSetParameter(
       state->params.opt_writer = TO_BROTLI_BOOL(!!value);
       return BROTLI_TRUE;
 
+    case BROTLI_PARAM_OPT_BLOCK_SPLITTER:
+      if ((value != 0) && (value != 1)) return BROTLI_FALSE;
+      state->params.opt_block_splitter = TO_BROTLI_BOOL(!!value);
+      return BROTLI_TRUE;
+
     default: return BROTLI_FALSE;
   }
 }
@@ -710,6 +715,7 @@ static void BrotliEncoderInitParams(BrotliEncoderParams* params) {
   params->size_hint = 0;
   params->disable_literal_context_modeling = BROTLI_FALSE;
   params->opt_writer = BROTLI_FALSE;
+  params->opt_block_splitter = BROTLI_FALSE;
   BrotliInitSharedEncoderDictionary(&params->dictionary);
   params->base64_mode = (int)BROTLI_DEFAULT_BASE64_MODE;
   params->max_base64_regions = BROTLI_DEFAULT_MAX_BASE64_REGIONS;

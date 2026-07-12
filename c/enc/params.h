@@ -40,6 +40,9 @@ typedef struct BrotliEncoderParams {
   /* Experimental: route metablock build+store through the optimized copies
      (metablock_opt.c / brotli_bit_stream_opt.c) instead of the originals. */
   BROTLI_BOOL opt_writer;
+  /* Experimental: route HQ block splitting through the optimized copy
+     (block_splitter_opt.c) instead of the original. */
+  BROTLI_BOOL opt_block_splitter;
   BrotliHasherParams hasher;
   BrotliDistanceParams dist;
   /* TODO(eustas): rename to BrotliShared... */

@@ -270,7 +270,17 @@ typedef enum BrotliEncoderParameter {
    * originals. Intended for A/B benchmarking the encoder optimizations within
    * a single binary; output is identical to the default path.
    */
-  BROTLI_PARAM_OPT_WRITER = 13
+  BROTLI_PARAM_OPT_WRITER = 13,
+  /**
+   * Experimental: select the optimized HQ block splitter.
+   *
+   * When set to 1, HQ metablock block splitting (BrotliSplitBlock, quality
+   * 10+) is routed through the optimized copy (block_splitter_opt.c) instead
+   * of the original. Inert unless the branch carries the optimized copy.
+   * Value 14 is reserved for BROTLI_PARAM_OPT_MATCHFINDER (experiment
+   * branches).
+   */
+  BROTLI_PARAM_OPT_BLOCK_SPLITTER = 15
 } BrotliEncoderParameter;
 
 /**
