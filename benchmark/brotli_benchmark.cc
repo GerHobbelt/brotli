@@ -5,7 +5,8 @@
  * benchmarks BrotliEncoderCompress() across the entire corpus.
  *
  * Usage:
- *   brotli_benchmark [--quality=N] [--lgwin=N] [--corpus=DIR] [--digest=FILE]
+ *   brotli_benchmark [--quality=N] [--lgwin=N] [--corpus=DIR]
+ *                    [--digest=FILE] [--roundtrip=FILE] [--threads=N]
  *                    [--dictionary=FILE] [--opt] [Google Benchmark flags...]
  *
  * Examples:
@@ -15,6 +16,7 @@
  *   brotli_benchmark --benchmark_perf_counters=CYCLES,INSTRUCTIONS
  *   brotli_benchmark --benchmark_out=results.json --benchmark_out_format=json
  *   brotli_benchmark --digest=out.txt   # write per-file output hashes, no bench
+ *   brotli_benchmark --roundtrip=out.txt --threads=16   # sizes + decode check
  */
 
 /* For sched_setaffinity / CPU_SET (used to pin digest worker threads). Must be
@@ -24,6 +26,7 @@
 #endif
 
 #include <benchmark/benchmark.h>
+#include <brotli/decode.h>
 #include <brotli/encode.h>
 #include <brotli/shared_dictionary.h>
 
@@ -34,6 +37,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -57,11 +61,13 @@ static int g_quality = 6;
 static int g_lgwin = BROTLI_DEFAULT_WINDOW;
 static std::string g_corpus_dir;
 static std::string g_digest_path;
-/* Number of worker threads for --digest (--digest-threads); 1 = serial.
-   Digest is a correctness gate, not a timed run, so it parallelizes across all
-   cores. Each worker pins itself to a distinct CPU so the isolated benchmarking
-   core(s) -- which the scheduler otherwise leaves idle -- are used too. */
-static int g_digest_threads = 1;
+static std::string g_roundtrip_path;
+/* Worker threads for the parallel per-file modes --digest / --roundtrip
+   (--threads); 1 = serial. These are correctness gates, not timed runs, so they
+   parallelize across all cores. Each worker pins itself to a distinct CPU so the
+   isolated benchmarking core(s) -- which the scheduler otherwise leaves idle --
+   are used too. */
+static int g_worker_threads = 1;
 static int g_opt_writer = 0;  /* BROTLI_PARAM_OPT_WRITER toggle (--opt) */
 /* BROTLI_PARAM_OPT_BLOCK_SPLITTER toggle (--opt-block-splitter) */
 static int g_opt_block_splitter = 0;
@@ -220,73 +226,146 @@ static void PinCurrentThreadToCpu(int cpu) {
 #endif
 }
 
+/* Worker-thread count clamped to [1, num_files]. */
+static int ClampWorkerThreads(size_t n) {
+  int t = g_worker_threads;
+  if (t < 1) t = 1;
+  if (static_cast<size_t>(t) > n) t = n ? static_cast<int>(n) : 1;
+  return t;
+}
+
+/* Run body(i) for every corpus index across `nthreads` CPU-pinned workers. Each
+   worker owns a disjoint stride of indices, so there is no locking on the hot
+   path; the body writes only into slots it owns. Explicit per-thread pinning is
+   what lets the isolated benchmarking cores be used (isolcpus keeps the
+   scheduler off them, so unpinned threads never land there). */
+static void RunParallelOverCorpus(int nthreads,
+                                  const std::function<void(size_t)>& body) {
+  const size_t n = g_corpus.size();
+  auto worker = [&](int t) {
+    PinCurrentThreadToCpu(t);
+    for (size_t i = static_cast<size_t>(t); i < n;
+         i += static_cast<size_t>(nthreads)) {
+      body(i);
+    }
+  };
+  std::vector<std::thread> pool;
+  for (int t = 1; t < nthreads; t++) pool.emplace_back(worker, t);
+  worker(0);
+  for (auto& th : pool) th.join();
+}
+
+/* Write index-aligned per-file `lines` to `path` in corpus order (so the output
+   is independent of thread count/scheduling). Returns 0 on success. */
+static int WriteLines(const std::string& path, const std::vector<std::string>& lines,
+                      const char* what) {
+  FILE* out = fopen(path.c_str(), "wb");
+  if (!out) {
+    fprintf(stderr, "Error: cannot open %s file %s\n", what, path.c_str());
+    return 1;
+  }
+  for (const auto& line : lines) {
+    if (!line.empty()) fwrite(line.data(), 1, line.size(), out);
+  }
+  fclose(out);
+  return 0;
+}
+
 /* Compress every corpus file at the configured quality/lgwin/mode and write a
    per-file digest of the compressed output: "name<TAB>len<TAB>fnv64". Used to
    verify two encoder versions produce bit-identical output. Returns 0 on
-   success.
-
-   Parallelized across g_digest_threads workers over the shared, read-only
-   g_corpus. Each worker owns a disjoint stride of file indices, so there is no
-   locking on the hot path; results are stored index-aligned and written in
-   corpus order, making the output byte-for-byte independent of thread count and
-   scheduling. */
+   success. */
 static int WriteDigest(const std::string& path) {
   const size_t n = g_corpus.size();
-  int nthreads = g_digest_threads;
-  if (nthreads < 1) nthreads = 1;
-  if (static_cast<size_t>(nthreads) > n) nthreads = n ? static_cast<int>(n) : 1;
-
+  const int nthreads = ClampWorkerThreads(n);
   std::vector<std::string> lines(n);  /* lines[i] = digest line for g_corpus[i] */
   std::atomic<bool> ok_all{true};
   std::mutex err_mu;
   std::string first_err;
 
-  auto worker = [&](int t) {
-    PinCurrentThreadToCpu(t);
-    for (size_t i = static_cast<size_t>(t); i < n;
-         i += static_cast<size_t>(nthreads)) {
-      if (!ok_all.load(std::memory_order_relaxed)) return;
-      const CorpusFile& cf = g_corpus[i];
-      size_t max_size = BrotliEncoderMaxCompressedSize(cf.data.size());
-      if (max_size == 0) max_size = cf.data.size() * 2;
-      std::vector<uint8_t> compressed(max_size);
-      size_t encoded_size = max_size;
-      if (!EncodeOneFile(cf.data.data(), cf.data.size(),
-                         compressed.data(), &encoded_size)) {
-        ok_all.store(false, std::memory_order_relaxed);
-        std::lock_guard<std::mutex> lk(err_mu);
-        if (first_err.empty()) first_err = cf.name;
-        return;
-      }
-      char tail[64];
-      snprintf(tail, sizeof(tail), "\t%zu\t%016llx\n",
-               encoded_size,
-               (unsigned long long)Fnv1a64(compressed.data(), encoded_size));
-      lines[i] = cf.name + tail;
+  RunParallelOverCorpus(nthreads, [&](size_t i) {
+    if (!ok_all.load(std::memory_order_relaxed)) return;
+    const CorpusFile& cf = g_corpus[i];
+    size_t max_size = BrotliEncoderMaxCompressedSize(cf.data.size());
+    if (max_size == 0) max_size = cf.data.size() * 2;
+    std::vector<uint8_t> compressed(max_size);
+    size_t encoded_size = max_size;
+    if (!EncodeOneFile(cf.data.data(), cf.data.size(),
+                       compressed.data(), &encoded_size)) {
+      ok_all.store(false, std::memory_order_relaxed);
+      std::lock_guard<std::mutex> lk(err_mu);
+      if (first_err.empty()) first_err = cf.name;
+      return;
     }
-  };
-
-  std::vector<std::thread> pool;
-  for (int t = 1; t < nthreads; t++) pool.emplace_back(worker, t);
-  worker(0);
-  for (auto& th : pool) th.join();
+    char tail[64];
+    snprintf(tail, sizeof(tail), "\t%zu\t%016llx\n", encoded_size,
+             (unsigned long long)Fnv1a64(compressed.data(), encoded_size));
+    lines[i] = cf.name + tail;
+  });
 
   if (!ok_all.load()) {
     fprintf(stderr, "Error: compression failed for %s\n", first_err.c_str());
     return 1;
   }
-
-  FILE* out = fopen(path.c_str(), "wb");
-  if (!out) {
-    fprintf(stderr, "Error: cannot open digest file %s\n", path.c_str());
-    return 1;
-  }
-  for (size_t i = 0; i < n; i++) {
-    if (!lines[i].empty()) fwrite(lines[i].data(), 1, lines[i].size(), out);
-  }
-  fclose(out);
+  if (WriteLines(path, lines, "digest") != 0) return 1;
   fprintf(stderr, "Wrote digest for %zu files to %s (%d thread%s)\n",
           n, path.c_str(), nthreads, nthreads == 1 ? "" : "s");
+  return 0;
+}
+
+/* Compress + decompress every corpus file, verify the roundtrip reproduces the
+   input exactly, and record the compressed size. Writes one line per file:
+   "name<TAB>input_size<TAB>compressed_size<TAB>ok" (ok = 1 if decompression
+   reproduced the input, else 0). Lets a caller compare the compressed-size
+   impact of a ratio-changing change while confirming the output still decodes.
+   Returns 0 unless compression itself failed; a roundtrip mismatch is reported
+   as ok=0 (and counted), not a hard error. */
+static int WriteRoundtrip(const std::string& path) {
+  const size_t n = g_corpus.size();
+  const int nthreads = ClampWorkerThreads(n);
+  std::vector<std::string> lines(n);
+  std::atomic<bool> enc_ok{true};
+  std::atomic<size_t> mismatches{0};
+  std::mutex err_mu;
+  std::string first_err;
+
+  RunParallelOverCorpus(nthreads, [&](size_t i) {
+    const CorpusFile& cf = g_corpus[i];
+    size_t max_size = BrotliEncoderMaxCompressedSize(cf.data.size());
+    if (max_size == 0) max_size = cf.data.size() * 2;
+    std::vector<uint8_t> compressed(max_size);
+    size_t encoded_size = max_size;
+    if (!EncodeOneFile(cf.data.data(), cf.data.size(),
+                       compressed.data(), &encoded_size)) {
+      enc_ok.store(false, std::memory_order_relaxed);
+      std::lock_guard<std::mutex> lk(err_mu);
+      if (first_err.empty()) first_err = cf.name;
+      return;
+    }
+    /* Decode back and compare to the original input. */
+    std::vector<uint8_t> decoded(cf.data.size());
+    size_t decoded_size = cf.data.size();
+    BrotliDecoderResult r = BrotliDecoderDecompress(
+        encoded_size, compressed.data(), &decoded_size, decoded.data());
+    bool ok = (r == BROTLI_DECODER_RESULT_SUCCESS) &&
+              (decoded_size == cf.data.size()) &&
+              (decoded_size == 0 ||
+               memcmp(decoded.data(), cf.data.data(), decoded_size) == 0);
+    if (!ok) mismatches.fetch_add(1, std::memory_order_relaxed);
+    char tail[80];
+    snprintf(tail, sizeof(tail), "\t%zu\t%zu\t%d\n",
+             cf.data.size(), encoded_size, ok ? 1 : 0);
+    lines[i] = cf.name + tail;
+  });
+
+  if (!enc_ok.load()) {
+    fprintf(stderr, "Error: compression failed for %s\n", first_err.c_str());
+    return 1;
+  }
+  if (WriteLines(path, lines, "roundtrip") != 0) return 1;
+  fprintf(stderr, "Roundtripped %zu files to %s (%d thread%s), %zu mismatch%s\n",
+          n, path.c_str(), nthreads, nthreads == 1 ? "" : "s",
+          mismatches.load(), mismatches.load() == 1 ? "" : "es");
   return 0;
 }
 
@@ -365,8 +444,10 @@ static void ParseCustomFlags(int* argc, char** argv) {
       g_corpus_dir = argv[i] + 9;
     } else if (strncmp(argv[i], "--digest=", 9) == 0) {
       g_digest_path = argv[i] + 9;
-    } else if (strncmp(argv[i], "--digest-threads=", 17) == 0) {
-      g_digest_threads = atoi(argv[i] + 17);
+    } else if (strncmp(argv[i], "--roundtrip=", 12) == 0) {
+      g_roundtrip_path = argv[i] + 12;
+    } else if (strncmp(argv[i], "--threads=", 10) == 0) {
+      g_worker_threads = atoi(argv[i] + 10);
     } else if (strncmp(argv[i], "--dictionary=", 13) == 0) {
       g_dictionary_path = argv[i] + 13;
     } else if (strcmp(argv[i], "--opt") == 0) {
@@ -428,6 +509,12 @@ int main(int argc, char** argv) {
      running the benchmark (used for bit-identity comparison). */
   if (!g_digest_path.empty()) {
     return WriteDigest(g_digest_path);
+  }
+
+  /* Roundtrip mode: emit per-file input/compressed sizes + a decode check and
+     exit without benchmarking (used to compare compressed-size gain/loss). */
+  if (!g_roundtrip_path.empty()) {
+    return WriteRoundtrip(g_roundtrip_path);
   }
 
   benchmark::Initialize(&argc, argv);

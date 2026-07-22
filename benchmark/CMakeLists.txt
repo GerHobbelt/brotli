@@ -19,6 +19,7 @@ target_link_libraries(brotli_benchmark
   PRIVATE
     benchmark::benchmark
     brotlienc
+    brotlidec  # BrotliDecoderDecompress, for --roundtrip
     brotlicommon
 )
 target_include_directories(brotli_benchmark

@@ -499,15 +499,15 @@ def run_one(args, version, which, record_dir, wrapper, opt, opt_mf,
            + base_args(args, corpus, opt, opt_mf, opt_bs))
     artifacts = {}
 
-    if args.mode == "digest":
-        out = record_dir / f"{which}.digest.txt"
-        # Digest is a correctness gate, not a timed run: it runs multi-threaded
-        # across all cores rather than pinned to the single isolated benchmark
-        # core. Drop the taskset/setarch/nice wrapper (the binary pins its own
-        # worker threads, one per CPU); keep this version's LD_LIBRARY_PATH +
-        # allocator preload via env.
+    if args.mode in ("digest", "roundtrip"):
+        # Correctness gates, not timed runs: run multi-threaded across all cores
+        # rather than pinned to the single isolated benchmark core. Drop the
+        # taskset/setarch/nice wrapper (the binary pins its own worker threads,
+        # one per CPU); keep this version's LD_LIBRARY_PATH + allocator preload.
+        ext = args.mode  # "digest" | "roundtrip"; also the binary flag name
+        out = record_dir / f"{which}.{ext}.txt"
         cmd = ([binary] + base_args(args, corpus, opt, opt_mf, opt_bs)
-               + [f"--digest={out}", f"--digest-threads={args.digest_jobs}"])
+               + [f"--{ext}={out}", f"--threads={args.threads}"])
         try:
             run(cmd, env=env)
         except subprocess.CalledProcessError as exc:
@@ -516,11 +516,11 @@ def run_one(args, version, which, record_dir, wrapper, opt, opt_mf,
                 f"{describe_exit(exc.returncode)}.\n"
                 f"  binary:  {binary}\n"
                 f"  command: {' '.join(cmd)}\n"
-                f"The benchmark binary faulted before writing its digest, so "
+                f"The benchmark binary faulted before writing its {ext}, so "
                 f"no comparison is possible. A SIGSEGV usually means this "
                 f"build has a bug (e.g. an out-of-bounds read from a bad hash "
                 f"key); try running the command above under gdb.")
-        artifacts["digest"] = str(out)
+        artifacts[ext] = str(out)
 
     elif args.mode in ("time", "counters"):
         out = record_dir / f"{which}.json"
@@ -678,6 +678,78 @@ def compare_digests(variants):
     return {"all_identical": all_identical, "pairs": pairs}
 
 
+def summarize_roundtrip(path):
+    """Parse a --roundtrip file (name<TAB>input<TAB>compressed<TAB>ok) into
+    totals, a per-file compressed-size map, and the list of roundtrip failures."""
+    total_in = total_comp = 0
+    comp = {}
+    fails = []
+    for line in Path(path).read_text().splitlines():
+        name, insz, csz, ok = line.split("\t")
+        insz, csz = int(insz), int(csz)
+        comp[name] = csz
+        total_in += insz
+        total_comp += csz
+        if ok != "1":
+            fails.append(name)
+    return {"total_in": total_in, "total_comp": total_comp,
+            "compressed": comp, "fails": fails, "n": len(comp)}
+
+
+def compare_roundtrip(variants):
+    """Print a compressed-size table across N variants: total bytes + ratio each,
+    and the size delta (gain/loss) vs the first. Also verifies every file still
+    roundtrips (decodes back to the input); any failure is a correctness bug."""
+    rows = [(v, summarize_roundtrip(v["artifacts"]["roundtrip"]))
+            for v in variants]
+    base_v, base = rows[0]
+    print()
+    out = []
+    any_fail = False
+    for i, (v, s) in enumerate(rows):
+        ratio = s["total_in"] / s["total_comp"] if s["total_comp"] else 0.0
+        line = (f"  {v['label']:<8}{variant_tag(v):<24} "
+                f"{s['total_comp']:>13,} B  ratio {ratio:.4f}x")
+        rec = {"label": v["label"], "ref": v["ref"],
+               "sha": v["version"]["sha"], "total_in": s["total_in"],
+               "total_compressed": s["total_comp"], "ratio": ratio,
+               "n": s["n"], "roundtrip_failures": len(s["fails"])}
+        if s["fails"]:
+            any_fail = True
+            line += f"  !! {len(s['fails'])} ROUNDTRIP FAIL"
+        if i > 0 and base["total_comp"]:
+            d = s["total_comp"] - base["total_comp"]
+            pct = 100.0 * d / base["total_comp"]
+            smaller = larger = equal = 0
+            for name, csz in s["compressed"].items():
+                b = base["compressed"].get(name)
+                if b is None:
+                    continue
+                smaller += csz < b
+                larger += csz > b
+                equal += csz == b
+            verb = "smaller" if d < 0 else "larger" if d > 0 else "same"
+            line += (f"   {d:+,} B ({pct:+.3f}%, {verb}) vs {base_v['label']}"
+                     f"  [{smaller} files smaller, {larger} larger, {equal} equal]")
+            rec.update({"delta_bytes_vs_first": d, "delta_pct_vs_first": pct,
+                        "files_smaller": smaller, "files_larger": larger,
+                        "files_equal": equal})
+        print(line)
+        out.append(rec)
+    print()
+    if any_fail:
+        for v, s in rows:
+            if s["fails"]:
+                print(f"  ROUNDTRIP FAILURES in {v['label']} "
+                      f"({len(s['fails'])} of {s['n']}):")
+                for name in s["fails"][:10]:
+                    print(f"    {name}")
+    else:
+        print("  all files roundtrip OK")
+    print()
+    return {"variants": out, "all_roundtrip_ok": not any_fail}
+
+
 # --- main -------------------------------------------------------------------
 
 
@@ -737,15 +809,18 @@ def main():
                          "tcmalloc avoids glibc per-file alloc churn (see q7).")
     ap.add_argument("--quality", type=int, default=6)
     ap.add_argument("--lgwin", type=int, default=22)
-    ap.add_argument("--mode", choices=["time", "counters", "pprof", "digest"],
+    ap.add_argument("--mode",
+                    choices=["time", "counters", "pprof", "digest", "roundtrip"],
                     default="time")
-    ap.add_argument("--digest-jobs", dest="digest_jobs", type=int,
+    ap.add_argument("--threads", dest="threads", type=int,
                     default=os.cpu_count() or 1,
-                    help="worker threads for --mode digest (default: all "
-                         "logical CPUs). Digest is a correctness gate, not a "
-                         "timed run, so it uses every core -- including the "
-                         "isolated benchmarking core(s) the scheduler otherwise "
-                         "leaves idle. Set 1 for the old serial behavior.")
+                    help="worker threads per variant for the parallel per-file "
+                         "modes (--mode digest / roundtrip; default: all logical "
+                         "CPUs). Passed straight to the binary's --threads. These "
+                         "are correctness gates, not timed runs, so they use "
+                         "every core -- including the isolated benchmarking "
+                         "core(s) the scheduler otherwise leaves idle. Variants "
+                         "still run sequentially; set 1 for serial.")
     ap.add_argument("--repetitions", type=int, default=5)
     ap.add_argument("--counters", default="CYCLES,INSTRUCTIONS",
                     help="perf counters for --mode counters")
@@ -946,6 +1021,8 @@ def main():
         comparison = compare_timing(record_dir, variants)
     elif args.mode == "digest" and len(variants) >= 2:
         comparison = compare_digests(variants)
+    elif args.mode == "roundtrip":
+        comparison = compare_roundtrip(variants)
 
     # Probe the version of each distinct compiler actually used to build a
     # variant (keyed by label); 'default' resolves to the system c++.
@@ -967,7 +1044,7 @@ def main():
         "pinned_core": None if args.no_pin else args.core,
         "isolation": isolation,
         "mode": args.mode,
-        "digest_jobs": args.digest_jobs if args.mode == "digest" else None,
+        "threads": args.threads if args.mode in ("digest", "roundtrip") else None,
         "opt_ab": args.opt_ab,
         "opt_mf_ab": args.opt_mf_ab,
         "opt_bs_ab": args.opt_bs_ab,

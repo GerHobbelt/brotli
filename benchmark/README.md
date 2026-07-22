@@ -61,9 +61,14 @@ build-bench/benchmark/brotli_benchmark \
 - `--digest=FILE` — write per-file compressed-output hashes
   (`name<TAB>len<TAB>fnv64`) and exit without benchmarking; used to check that
   two encoder versions produce **bit-identical** output
-- `--digest-threads=N` — parallelize `--digest` across N worker threads, each
-  pinned to a distinct CPU (default 1 = serial; ab.py drives this via
-  `--digest-jobs`). Output order is independent of N.
+- `--roundtrip=FILE` — compress **and decompress** every file, verify the
+  roundtrip reproduces the input, and write per-file sizes
+  (`name<TAB>input<TAB>compressed<TAB>ok`); exit without benchmarking. Used to
+  compare compressed-size gain/loss for a ratio-changing change while confirming
+  the output still decodes.
+- `--threads=N` — parallelize `--digest` / `--roundtrip` across N worker
+  threads, each pinned to a distinct CPU (default 1 = serial; ab.py drives this
+  via `--threads`). Output order is independent of N.
 - `--benchmark_out=results.json --benchmark_out_format=json` — save results
 
 The `CompressionRatio` counter is reported as **times smaller**
@@ -172,18 +177,25 @@ benchmark/ab.py master HEAD --compiler clang
 - `pprof` — captures a CPU profile per version (needs `libprofiler.so`)
 - `digest` — per-file output hashes, diffed to report **bit-identity**
   (the correct gate for a perf-only change that shouldn't alter the bitstream)
+- `roundtrip` — per-file compressed **sizes** plus a decode check; reports the
+  total size **gain/loss** between variants (and per-file smaller/larger/equal
+  counts), and flags any file that fails to roundtrip. The gate for a
+  ratio-**changing** change: confirms the output still decodes and quantifies
+  the size impact. (`digest` is for changes that must *not* alter the bitstream;
+  `roundtrip` is for changes that intentionally do.)
 
-Unlike the timing modes, `digest` is a **correctness** gate, not a measurement,
-so it does not pin to the single isolated benchmark core — it runs multi-threaded
-across **all** logical CPUs (`--digest-jobs`, default = every core). Each worker
-compresses a disjoint stride of the corpus and pins itself to a distinct CPU,
-which is what lets it use the kernel's **isolated** cores too: `isolcpus` hides
-them from the scheduler, so only explicit pinning puts work there (otherwise the
-digest would leave that ~1 core / 13% idle). Output is written in corpus order,
-so it is byte-for-byte independent of the thread count — a 16-thread digest and
-`--digest-jobs 1` produce identical files. On the default corpus this cuts a q6
-digest from ~10 s to ~2 s. (The isolated cores are free to borrow here because a
-digest run never overlaps a timing run.)
+Unlike the timing modes, `digest` and `roundtrip` are **correctness** gates, not
+measurements, so they do not pin to the single isolated benchmark core — they run
+multi-threaded across **all** logical CPUs (`--threads`, default = every core).
+Each worker takes a disjoint stride of the corpus and pins itself to a distinct
+CPU, which is what lets them use the kernel's **isolated** cores too: `isolcpus`
+hides them from the scheduler, so only explicit pinning puts work there
+(otherwise ~1 core / 13% sits idle). Output is written in corpus order, so it is
+byte-for-byte independent of the thread count — a 16-thread digest and
+`--threads 1` produce identical files. On the default corpus this cuts a q6
+digest from ~10 s to ~2 s. (The isolated cores are free to borrow here because
+these runs never overlap a timing run. Note the per-variant corpus **load** is
+still serial — the main remaining floor.)
 
 ### Variance reduction
 
