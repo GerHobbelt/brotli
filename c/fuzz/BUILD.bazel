@@ -10,3 +10,17 @@ cc_fuzz_test(
     srcs = ["decode_fuzzer.c"],
     deps = ["@org_brotli//:brotlidec"],
 )
+
+# Roundtrip encoder fuzzer: encodes each input with the optimized paths enabled,
+# decodes the result, and aborts unless it reproduces the original bytes. Run
+# under a sanitizer config, e.g.
+#   bazel run --config=asan-libfuzzer //c/fuzz:encode_roundtrip_fuzzer
+#   bazel run --config=msan-libfuzzer //c/fuzz:encode_roundtrip_fuzzer
+cc_fuzz_test(
+    name = "encode_roundtrip_fuzzer",
+    srcs = ["encode_roundtrip_fuzzer.c"],
+    deps = [
+        "@org_brotli//:brotlidec",
+        "@org_brotli//:brotlienc",
+    ],
+)
