@@ -994,9 +994,21 @@ def main():
     }
     (record_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
-    print(f"\nRun record: {record_dir}")
+    # Print each artifact as a path relative to the current directory (so it can
+    # be pasted straight into a pprof/compare command), falling back to the
+    # absolute path when the cwd isn't an ancestor of the record dir.
+    cwd = Path.cwd()
+
+    def rel_to_cwd(p):
+        p = Path(p)
+        try:
+            return str(p.relative_to(cwd))
+        except ValueError:
+            return str(p)
+
+    print(f"\nRun record: {rel_to_cwd(record_dir)}")
     for f in sorted(record_dir.iterdir()):
-        print(f"  {f.name}")
+        print(f"  {rel_to_cwd(f)}")
 
 
 if __name__ == "__main__":
