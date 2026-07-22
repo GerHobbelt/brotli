@@ -254,6 +254,29 @@ digest from ~10 s to ~2 s. (The isolated cores are free to borrow here because
 these runs never overlap a timing run. Note the per-variant corpus **load** is
 still serial — the main remaining floor.)
 
+### Quality sweep (`--quality`)
+
+`--quality` takes a single `N` (default 6) **or a sweep**: a range `N-M`, a
+comma list `N,M,..`, or a mix. A sweep runs every variant at each quality and,
+for `time`/`counters`, prints a condensed cross-quality table on top of the
+usual per-quality output; `digest`/`roundtrip` sweeps just check each quality.
+Artifacts are suffixed `.qN`, and each quality's result is recorded under
+`sweep` in the manifest.
+
+```bash
+# speed/ratio of one ref across the quality curve:
+benchmark/ab.py WORKTREE --quality 5-11
+# A/B two refs at the qualities you care about (per-quality speedup + ratio):
+benchmark/ab.py master HEAD --quality 7,9,10
+```
+
+```
+=== quality sweep summary (MB/s | ratio | speedup vs first) ===
+  q7   v0   76.6 4.7477x   v1   79.1 4.7477x +3.26%
+  q9   v0   41.2 4.9012x   v1   42.0 4.9012x +1.94%
+  q10  v0   18.5 4.9530x   v1   18.7 4.9530x +1.08%
+```
+
 ### Variance reduction
 
 By default the run is pinned to a core (`--core`, default 3), wrapped in

@@ -763,6 +763,51 @@ def compare_roundtrip(variants):
     return {"variants": out, "all_roundtrip_ok": not any_fail}
 
 
+def parse_qualities(spec):
+    """Parse a --quality spec into a sorted, de-duplicated list of ints.
+    '6' -> [6]; '5,7,9' -> [5,7,9]; '5-11' -> [5..11]; mixes allowed."""
+    out = set()
+    for part in str(spec).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            if "-" in part:
+                a, b = (int(x) for x in part.split("-", 1))
+                out.update(range(min(a, b), max(a, b) + 1))
+            else:
+                out.add(int(part))
+        except ValueError:
+            sys.exit(f"--quality: cannot parse '{part}' (use N, N-M, or a "
+                     f"comma-separated mix)")
+    q = sorted(out)
+    if not q:
+        sys.exit("--quality: no qualities given")
+    for x in q:
+        if not 0 <= x <= 11:
+            sys.exit(f"--quality {x} out of range (valid 0-11)")
+    return q
+
+
+def print_sweep_summary(sweep_results):
+    """Condensed cross-quality table for a --quality sweep (time/counters):
+    one row per quality, per-variant MB/s + ratio, and speedup vs the first."""
+    print("=== quality sweep summary (MB/s | ratio | speedup vs first) ===")
+    for rec in sweep_results:
+        cmp = rec["comparison"]
+        if not cmp or "variants" not in cmp:
+            continue
+        cells = []
+        for i, vr in enumerate(cmp["variants"]):
+            cell = (f"{vr['label']} {vr.get('median_MBps') or 0:6.1f} "
+                    f"{vr.get('compression_ratio') or 0:.4f}x")
+            if i > 0 and vr.get("speedup_vs_first"):
+                cell += f" {(vr['speedup_vs_first'] - 1) * 100:+.2f}%"
+            cells.append(cell)
+        print(f"  q{rec['quality']:<2}  " + "   ".join(cells))
+    print()
+
+
 # --- main -------------------------------------------------------------------
 
 
@@ -831,7 +876,11 @@ def main():
                     help="allocator to LD_PRELOAD: 'tcmalloc' (default), "
                          "'system' (no preload), or a path to a preload .so. "
                          "tcmalloc avoids glibc per-file alloc churn (see q7).")
-    ap.add_argument("--quality", type=int, default=6)
+    ap.add_argument("--quality", default="6",
+                    help="quality to benchmark; a single N (default 6), or a "
+                         "sweep: a range 'N-M' or comma list 'N,M,..' (or a mix) "
+                         "runs every variant at each quality and prints a table "
+                         "across them, e.g. --quality 5-11 or --quality 7,9,10")
     ap.add_argument("--lgwin", type=int, default=22)
     ap.add_argument("--mode",
                     choices=["time", "counters", "pprof", "digest", "roundtrip"],
@@ -866,6 +915,7 @@ def main():
                          "include them)")
     args = ap.parse_args()
     args.malloc_preload = resolve_malloc(args.malloc)
+    args.qualities = parse_qualities(args.quality)
 
     repo_root = Path(git(["rev-parse", "--show-toplevel"])).resolve()
     corpus = str(Path(args.corpus).expanduser().resolve())
@@ -1028,41 +1078,72 @@ def main():
 
     wrapper = build_wrapper(args.core, args.no_pin, args.no_aslr_disable)
 
-    # --verify pre-gate: digest every variant and require bit-identity before
-    # any timing runs, so a "perf-only" change that silently alters the
-    # bitstream can't be reported as a speedup. Runs before the Tuner block so a
-    # failure aborts without touching governor/turbo state.
-    verify_result = None
-    if args.verify:
-        print("\n== verify: bit-identity gate (digest) ==", file=sys.stderr)
-        for v in variants:
-            v["artifacts"] = run_one(
-                args, v["version"], f"{v['label']}.verify", record_dir, wrapper,
-                v["opt"], v["opt_mf"], v["opt_bs"], mode="digest")
-        verify_result = compare_digests(variants)
-        for v in variants:
-            v.pop("artifacts", None)  # timing loop repopulates
-        if not verify_result["all_identical"]:
-            sys.exit("\n--verify FAILED: variants are NOT bit-identical -- "
-                     "refusing to report timings (a perf-only change must not "
-                     "alter the bitstream). See the digest diff above.")
-        print("  verify passed: all variants bit-identical\n", file=sys.stderr)
-
+    # Run the variants at each requested quality (a single quality is just a
+    # one-element sweep). Each quality gets its own --verify pre-gate + timing +
+    # comparison; a sweep also prints a condensed cross-quality summary.
+    sweep = len(args.qualities) > 1
+    sweep_results = []  # [{"quality", "verify", "comparison"}] per quality
     with Tuner(args.tune):
         # Re-read env so the manifest reflects the actual (tuned) state.
         env_state = read_env_state()
         irq_before = read_irq_counts()
-        for v in variants:
-            clabel = v["version"].get("compiler", "default")
-            print(f"\n== {v['label']}: {v['ref']} "
-                  f"({v['version']['sha'][:12]}) opt={int(v['opt'])} "
-                  f"optmf={int(v['opt_mf'])} optbs={int(v['opt_bs'])}"
-                  f"{'' if clabel == 'default' else '  cc=' + clabel} ==",
-                  file=sys.stderr)
-            v["artifacts"] = run_one(args, v["version"], v["label"],
-                                     record_dir, wrapper, v["opt"],
-                                     v["opt_mf"], v["opt_bs"])
+        for q in args.qualities:
+            args.quality = q  # consumed by base_args for this quality's runs
+            qtag = f".q{q}" if sweep else ""
+            if sweep:
+                print(f"\n########## quality {q} ##########", file=sys.stderr)
+
+            # --verify pre-gate: digest every variant and require bit-identity
+            # before reporting timings, so a "perf-only" change that silently
+            # alters the bitstream can't be reported as a speedup.
+            vres = None
+            if args.verify:
+                print(f"\n== verify: bit-identity gate (digest) q{q} ==",
+                      file=sys.stderr)
+                for v in variants:
+                    v["artifacts"] = run_one(
+                        args, v["version"], f"{v['label']}{qtag}.verify",
+                        record_dir, wrapper, v["opt"], v["opt_mf"], v["opt_bs"],
+                        mode="digest")
+                vres = compare_digests(variants)
+                for v in variants:
+                    v.pop("artifacts", None)
+                if not vres["all_identical"]:
+                    sys.exit(f"\n--verify FAILED at q{q}: variants are NOT "
+                             f"bit-identical -- refusing to report timings (a "
+                             f"perf-only change must not alter the bitstream). "
+                             f"See the digest diff above.")
+                print("  verify passed: all variants bit-identical\n",
+                      file=sys.stderr)
+
+            for v in variants:
+                clabel = v["version"].get("compiler", "default")
+                print(f"\n== {v['label']}{qtag}: {v['ref']} "
+                      f"({v['version']['sha'][:12]}) q={q} opt={int(v['opt'])} "
+                      f"optmf={int(v['opt_mf'])} optbs={int(v['opt_bs'])}"
+                      f"{'' if clabel == 'default' else '  cc=' + clabel} ==",
+                      file=sys.stderr)
+                v["artifacts"] = run_one(args, v["version"], f"{v['label']}{qtag}",
+                                         record_dir, wrapper, v["opt"],
+                                         v["opt_mf"], v["opt_bs"])
+                v.setdefault("runs", {})[q] = v["artifacts"]
+
+            if args.mode in ("time", "counters"):
+                cmp_q = compare_timing(record_dir, variants)
+            elif args.mode == "digest" and len(variants) >= 2:
+                cmp_q = compare_digests(variants)
+            elif args.mode == "roundtrip":
+                cmp_q = compare_roundtrip(variants)
+            else:
+                cmp_q = None
+            sweep_results.append({"quality": q, "verify": vres,
+                                  "comparison": cmp_q})
+            sys.stdout.flush()  # keep per-quality tables ordered when piped
         irq_after = read_irq_counts()
+
+    if sweep and args.mode in ("time", "counters"):
+        print()
+        print_sweep_summary(sweep_results)
 
     # Isolation provenance: was the pinned core actually isolated, and did any
     # interrupts fire on it (or its SMT sibling) during the runs?
@@ -1081,13 +1162,10 @@ def main():
                                                      sibling)
         isolation["interrupts_during_run"] = irqs
 
-    comparison = None
-    if args.mode in ("time", "counters"):
-        comparison = compare_timing(record_dir, variants)
-    elif args.mode == "digest" and len(variants) >= 2:
-        comparison = compare_digests(variants)
-    elif args.mode == "roundtrip":
-        comparison = compare_roundtrip(variants)
+    # Single quality: surface its comparison/verify at the top level as before.
+    # Sweep: the per-quality results live under "sweep".
+    comparison = sweep_results[0]["comparison"] if not sweep else None
+    verify_result = sweep_results[0]["verify"] if not sweep else None
 
     # Probe the version of each distinct compiler actually used to build a
     # variant (keyed by label); 'default' resolves to the system c++.
@@ -1118,7 +1196,7 @@ def main():
         "compiler_arg": args.compiler,
         "compiler_ab": args.compiler_ab,
         "malloc": {"spec": args.malloc, "preload": args.malloc_preload},
-        "quality": args.quality,
+        "qualities": args.qualities,
         "lgwin": args.lgwin,
         "repetitions": args.repetitions,
         "counters": args.counters if args.mode == "counters" else None,
@@ -1132,9 +1210,11 @@ def main():
         "working_tree_diff_sha256": diff_sha,
         "variants": [{"label": v["label"], "ref": v["ref"], "opt": v["opt"],
                       "opt_mf": v["opt_mf"], "opt_bs": v["opt_bs"],
-                      **v["version"], "artifacts": v["artifacts"]}
+                      **v["version"],
+                      "runs": {str(q): a for q, a in v.get("runs", {}).items()}}
                      for v in variants],
         "comparison": comparison,
+        "sweep": sweep_results if sweep else None,
     }
     (record_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
