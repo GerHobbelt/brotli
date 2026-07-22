@@ -484,13 +484,17 @@ def resolve_malloc(spec):
 
 
 def run_one(args, version, which, record_dir, wrapper, opt, opt_mf,
-            opt_bs):
-    """Run one variant in the selected mode. Returns artifact paths."""
+            opt_bs, mode=None):
+    """Run one variant in `mode` (default args.mode). Returns artifact paths.
+
+    The explicit `mode` lets --verify run a digest pass ahead of a timing run
+    without mutating args.mode."""
+    mode = mode or args.mode
     env = dict(os.environ)
     env["LD_LIBRARY_PATH"] = version["build_dir"]  # use THIS version's libs
     # Preload the chosen allocator (default tcmalloc). For pprof the preload is
     # folded into the env-shim below instead, so it isn't lost.
-    if args.malloc_preload and args.mode != "pprof":
+    if args.malloc_preload and mode != "pprof":
         prev = env.get("LD_PRELOAD")
         env["LD_PRELOAD"] = args.malloc_preload + (":" + prev if prev else "")
     binary = version["binary"]
@@ -499,12 +503,12 @@ def run_one(args, version, which, record_dir, wrapper, opt, opt_mf,
            + base_args(args, corpus, opt, opt_mf, opt_bs))
     artifacts = {}
 
-    if args.mode in ("digest", "roundtrip"):
+    if mode in ("digest", "roundtrip"):
         # Correctness gates, not timed runs: run multi-threaded across all cores
         # rather than pinned to the single isolated benchmark core. Drop the
         # taskset/setarch/nice wrapper (the binary pins its own worker threads,
         # one per CPU); keep this version's LD_LIBRARY_PATH + allocator preload.
-        ext = args.mode  # "digest" | "roundtrip"; also the binary flag name
+        ext = mode  # "digest" | "roundtrip"; also the binary flag name
         out = record_dir / f"{which}.{ext}.txt"
         cmd = ([binary] + base_args(args, corpus, opt, opt_mf, opt_bs)
                + [f"--{ext}={out}", f"--threads={args.threads}"])
@@ -522,21 +526,21 @@ def run_one(args, version, which, record_dir, wrapper, opt, opt_mf,
                 f"key); try running the command above under gdb.")
         artifacts[ext] = str(out)
 
-    elif args.mode in ("time", "counters"):
+    elif mode in ("time", "counters"):
         out = record_dir / f"{which}.json"
         cmd += [f"--benchmark_out={out}", "--benchmark_out_format=json",
                 f"--benchmark_repetitions={args.repetitions}",
                 "--benchmark_enable_random_interleaving=true",
                 # Console shows only aggregate rows; the JSON keeps every rep.
                 "--benchmark_display_aggregates_only=true"]
-        if args.mode == "counters":
+        if mode == "counters":
             cmd += [f"--benchmark_perf_counters={args.counters}"]
         console = record_dir / f"{which}.console.txt"
         run_tee(cmd, env=env, log_path=console)
         artifacts["json"] = str(out)
         artifacts["console"] = str(console)
 
-    elif args.mode == "pprof":
+    elif mode == "pprof":
         lib = find_libprofiler()
         if not lib:
             sys.exit("pprof mode needs libprofiler.so "
@@ -812,6 +816,12 @@ def main():
     ap.add_argument("--mode",
                     choices=["time", "counters", "pprof", "digest", "roundtrip"],
                     default="time")
+    ap.add_argument("--verify", action="store_true",
+                    help="before a timing run (--mode time/counters), digest "
+                         "every variant and refuse to report timings unless they "
+                         "are bit-identical -- the one-command gate for a "
+                         "perf-only change (must be identical AND faster). "
+                         "Requires >= 2 variants.")
     ap.add_argument("--threads", dest="threads", type=int,
                     default=os.cpu_count() or 1,
                     help="worker threads per variant for the parallel per-file "
@@ -917,6 +927,16 @@ def main():
                  for i, r in enumerate(refs)]
     using_worktree = any(r == "WORKTREE" for _, r, _, _, _, _ in specs)
 
+    # --verify gates a timing run on bit-identity, so it needs a timing mode and
+    # at least two variants to compare.
+    if args.verify:
+        if args.mode not in ("time", "counters"):
+            sys.exit("--verify applies to a timing run (--mode time/counters); "
+                     "for --mode digest the check IS the run.")
+        if len(specs) < 2:
+            sys.exit("--verify compares variants for bit-identity; give >= 2 "
+                     "(two refs, or a toggle A/B like --opt-ab).")
+
     # Provenance gate: uncommitted changes to tracked files are not captured by
     # SHA worktrees. A WORKTREE variant is the deliberate way to benchmark them,
     # so don't gate when one is requested.
@@ -983,6 +1003,26 @@ def main():
 
     wrapper = build_wrapper(args.core, args.no_pin, args.no_aslr_disable)
 
+    # --verify pre-gate: digest every variant and require bit-identity before
+    # any timing runs, so a "perf-only" change that silently alters the
+    # bitstream can't be reported as a speedup. Runs before the Tuner block so a
+    # failure aborts without touching governor/turbo state.
+    verify_result = None
+    if args.verify:
+        print("\n== verify: bit-identity gate (digest) ==", file=sys.stderr)
+        for v in variants:
+            v["artifacts"] = run_one(
+                args, v["version"], f"{v['label']}.verify", record_dir, wrapper,
+                v["opt"], v["opt_mf"], v["opt_bs"], mode="digest")
+        verify_result = compare_digests(variants)
+        for v in variants:
+            v.pop("artifacts", None)  # timing loop repopulates
+        if not verify_result["all_identical"]:
+            sys.exit("\n--verify FAILED: variants are NOT bit-identical -- "
+                     "refusing to report timings (a perf-only change must not "
+                     "alter the bitstream). See the digest diff above.")
+        print("  verify passed: all variants bit-identical\n", file=sys.stderr)
+
     with Tuner(args.tune):
         # Re-read env so the manifest reflects the actual (tuned) state.
         env_state = read_env_state()
@@ -1045,6 +1085,7 @@ def main():
         "isolation": isolation,
         "mode": args.mode,
         "threads": args.threads if args.mode in ("digest", "roundtrip") else None,
+        "verify": verify_result,
         "opt_ab": args.opt_ab,
         "opt_mf_ab": args.opt_mf_ab,
         "opt_bs_ab": args.opt_bs_ab,

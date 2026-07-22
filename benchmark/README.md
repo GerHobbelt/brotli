@@ -136,10 +136,20 @@ them:
 # how much the optimized writer buys, on the current working copy:
 benchmark/ab.py WORKTREE --opt-ab --mode digest   # must be bit-identical
 benchmark/ab.py WORKTREE --opt-ab                 # then time it
+# ...or both in one shot with --verify (see below):
+benchmark/ab.py WORKTREE --opt-ab --verify
 # how much the optimized match finder buys, with the writer opt held on:
 benchmark/ab.py WORKTREE --opt --opt-mf-ab --mode digest
 benchmark/ab.py WORKTREE --opt --opt-mf-ab
 ```
+
+**`--verify`** collapses the two-step gate into one command: on a timing run
+(`--mode time`/`counters`, ≥ 2 variants) it first digests every variant and
+**refuses to report timings unless they are bit-identical**, exiting non-zero
+otherwise (and naming the files that differ). Since a perf-only change must be
+*identical AND faster*, this makes "measured a speedup on a change that silently
+altered the bitstream" impossible. The digest pre-pass is the all-core one, so
+it adds only ~2 s.
 
 ### Compiler (`--compiler`, `--compiler-ab`)
 
