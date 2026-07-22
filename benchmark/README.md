@@ -133,6 +133,34 @@ benchmark/ab.py WORKTREE --opt --opt-mf-ab --mode digest
 benchmark/ab.py WORKTREE --opt --opt-mf-ab
 ```
 
+### Compiler (`--compiler`, `--compiler-ab`)
+
+By default the build uses whatever CMake auto-detects (the system default,
+GCC on this box). Two flags override that — this is a **build-time** axis,
+unlike the runtime opt toggles above:
+
+- `--compiler SPEC` — build **every** ref with a given compiler. `SPEC` is a
+  family name (`gcc`, `clang`) or an explicit `CC:CXX` pair
+  (`clang-18:clang++-18`). Sets `-DCMAKE_C_COMPILER`/`-DCMAKE_CXX_COMPILER`.
+- `--compiler-ab A,B` — build **one** ref with two compilers and compare them;
+  `A,B` are two specs, or just `B` to compare the system default vs `B`.
+  Combine with `--opt`/`--opt-mf`/`--opt-bs` to hold the runtime toggles on in
+  both variants. Mutually exclusive with the other `*-ab` flags.
+
+Each compiler gets its own build-cache dir (CMake bakes the compiler into a
+build tree and refuses to change it); the SHA worktree checkout is shared. The
+run record's `compiler` field maps each variant's label to the exact compiler
+version, and `--mode digest` verifies the bitstream is identical across
+compilers (it must be — brotli's output is compiler-independent).
+
+```bash
+# does clang produce the same bytes as gcc, and is it faster?
+benchmark/ab.py WORKTREE --compiler-ab gcc,clang --mode digest  # bit-identical
+benchmark/ab.py WORKTREE --compiler-ab gcc,clang                # then time it
+# benchmark a chain of refs entirely under clang:
+benchmark/ab.py master HEAD --compiler clang
+```
+
 ### Modes (`--mode`)
 
 - `time` (default) — median real_time + throughput, with repetitions and

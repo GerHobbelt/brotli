@@ -30,6 +30,7 @@ import datetime
 import hashlib
 import json
 import os
+import re
 import shutil
 import signal
 import statistics
@@ -274,20 +275,64 @@ def build_wrapper(core, no_pin, no_aslr):
 # --- build ------------------------------------------------------------------
 
 
-def _cmake_build(src, build, ref, tag):
-    """Configure + build brotli_benchmark from source dir `src` into `build`."""
+# Friendly compiler families -> (CC, CXX). Anything else is passed as an
+# explicit 'CC:CXX' pair (see resolve_compiler).
+_COMPILER_FAMILIES = {
+    "gcc": ("gcc", "g++"),
+    "clang": ("clang", "clang++"),
+}
+
+
+def resolve_compiler(spec):
+    """Map a --compiler spec to (CC, CXX, label).
+
+    None -> the system default (whatever CMake auto-detects); label 'default'.
+    A family name ('gcc', 'clang') -> its (CC, CXX) pair.
+    An explicit 'CC:CXX' pair (e.g. 'clang-18:clang++-18') -> used verbatim.
+    The label is a short filename/table-safe tag for the build cache dir and
+    run record."""
+    if spec is None:
+        return (None, None, "default")
+    if ":" in spec:
+        cc, cxx = spec.split(":", 1)
+        if not cc or not cxx:
+            sys.exit(f"--compiler '{spec}': expected 'CC:CXX'")
+        return (cc, cxx, _safe_label(spec))
+    if spec in _COMPILER_FAMILIES:
+        cc, cxx = _COMPILER_FAMILIES[spec]
+        return (cc, cxx, spec)
+    sys.exit(f"unknown --compiler '{spec}'; use "
+             f"{', '.join(sorted(_COMPILER_FAMILIES))}, or an explicit 'CC:CXX'")
+
+
+def _safe_label(s):
+    """Sanitize a compiler spec into a path/table-safe label."""
+    return re.sub(r"[^A-Za-z0-9._+-]", "-", s)
+
+
+def _cmake_build(src, build, ref, tag, cc=None, cxx=None):
+    """Configure + build brotli_benchmark from source dir `src` into `build`.
+
+    cc/cxx, when given, pin CMAKE_C_COMPILER/CMAKE_CXX_COMPILER; otherwise
+    CMake auto-detects the system default."""
     build.mkdir(parents=True, exist_ok=True)
     log_path = build / "ab-build.log"
     print(f"  building {ref} ({tag}); output -> {log_path}", file=sys.stderr)
-    steps = [
+    configure = [
         # Release optimization plus -g: debug info lets pprof show per-source-
         # line samples. -g does not change generated code, so timing runs are
         # unaffected -- it only adds DWARF sections. Re-running configure also
         # re-globs sources (picks up added/removed files in a working tree).
-        ["cmake", "-B", str(build), "-S", str(src),
-         "-DCMAKE_BUILD_TYPE=Release", "-DBROTLI_BUILD_BENCHMARKS=ON",
-         "-DBROTLI_DISABLE_TESTS=ON",
-         "-DCMAKE_C_FLAGS=-g", "-DCMAKE_CXX_FLAGS=-g"],
+        "cmake", "-B", str(build), "-S", str(src),
+        "-DCMAKE_BUILD_TYPE=Release", "-DBROTLI_BUILD_BENCHMARKS=ON",
+        "-DBROTLI_DISABLE_TESTS=ON",
+        "-DCMAKE_C_FLAGS=-g", "-DCMAKE_CXX_FLAGS=-g"]
+    if cc:
+        configure.append(f"-DCMAKE_C_COMPILER={cc}")
+    if cxx:
+        configure.append(f"-DCMAKE_CXX_COMPILER={cxx}")
+    steps = [
+        configure,
         ["cmake", "--build", str(build), "-j", str(os.cpu_count()),
          "--target", "brotli_benchmark"],
     ]
@@ -302,33 +347,41 @@ def _cmake_build(src, build, ref, tag):
     log_path.write_text("".join(chunks))
 
 
-def build_version(repo_root, ref):
+def build_version(repo_root, ref, compiler=(None, None, "default")):
     """Build a benchmarkable version and return an info dict.
 
     A normal ref is resolved to a SHA and materialized as a detached worktree,
     cached by SHA. The pseudo-ref WORKTREE builds the live (possibly
     uncommitted) working tree in place; since that can change between runs it is
     always rebuilt (cmake is incremental, so this is cheap), and its provenance
-    is recorded as HEAD plus a hash of `git diff HEAD`."""
+    is recorded as HEAD plus a hash of `git diff HEAD`.
+
+    `compiler` is a (CC, CXX, label) tuple. Since CMake bakes the compiler into
+    a build dir and refuses to change it, a non-default compiler gets its own
+    build dir (suffixed with the label); the SHA worktree checkout is shared
+    because the source is compiler-independent."""
+    cc, cxx, clabel = compiler
+    suffix = "" if clabel == "default" else f"__{clabel}"
     cache = repo_root / ".ab-cache"
     if ref == "WORKTREE":
         head = git(["rev-parse", "HEAD"], cwd=repo_root)
         diff_sha = hashlib.sha256(
             git(["diff", "HEAD"], cwd=repo_root).encode()).hexdigest()
-        build = cache / "build" / "worktree"
+        build = cache / "build" / f"worktree{suffix}"
         binary = build / "benchmark" / "brotli_benchmark"
-        _cmake_build(repo_root, build, ref, f"{head[:12]}+wt")
+        _cmake_build(repo_root, build, ref, f"{head[:12]}+wt", cc, cxx)
         if not binary.exists():
             sys.exit(f"build produced no benchmark binary at {binary}")
         return {
             "ref": ref, "sha": head, "worktree_diff_sha256": diff_sha,
             "worktree": str(repo_root), "build_dir": str(build),
             "binary": str(binary), "binary_sha256": sha256_file(binary),
+            "compiler": clabel,
         }
 
     sha = git(["rev-parse", ref], cwd=repo_root)
     wt = cache / "wt" / sha
-    build = cache / "build" / sha
+    build = cache / "build" / f"{sha}{suffix}"
     binary = build / "benchmark" / "brotli_benchmark"
 
     if not wt.exists():
@@ -337,7 +390,7 @@ def build_version(repo_root, ref):
             cwd=repo_root, capture=True)
 
     if not binary.exists():
-        _cmake_build(wt, build, ref, sha[:12])
+        _cmake_build(wt, build, ref, sha[:12], cc, cxx)
 
     if not binary.exists():
         sys.exit(f"build produced no benchmark binary at {binary}")
@@ -349,6 +402,7 @@ def build_version(repo_root, ref):
         "build_dir": str(build),
         "binary": str(binary),
         "binary_sha256": sha256_file(binary),
+        "compiler": clabel,
     }
 
 
@@ -530,11 +584,13 @@ def summarize_json(path):
 
 
 def variant_tag(v):
-    """Short human label for a variant: ref@sha plus opt markers."""
+    """Short human label for a variant: ref@sha plus opt/compiler markers."""
+    clabel = v["version"].get("compiler", "default")
     return (f"{v['ref']}@{v['version']['sha'][:9]}"
             + ("  opt" if v["opt"] else "")
             + ("  optmf" if v["opt_mf"] else "")
-            + ("  optbs" if v["opt_bs"] else ""))
+            + ("  optbs" if v["opt_bs"] else "")
+            + (f"  cc:{clabel}" if clabel != "default" else ""))
 
 
 def compare_timing(record_dir, variants):
@@ -650,6 +706,17 @@ def main():
                     help="one build, compare block-splitter-opt OFF vs ON at "
                          "a single ref; combine with --opt/--opt-mf to hold "
                          "the other toggles on in both variants")
+    ap.add_argument("--compiler",
+                    help="compiler to build every ref with: a family name "
+                         "('gcc', 'clang') or an explicit 'CC:CXX' pair "
+                         "(e.g. 'clang-18:clang++-18'). Default: whatever CMake "
+                         "auto-detects (the system default).")
+    ap.add_argument("--compiler-ab", dest="compiler_ab",
+                    help="build one ref with two compilers and compare them; "
+                         "value is 'A,B' (two specs) or just 'B' (compare the "
+                         "system default vs B). Each spec is a family name or "
+                         "'CC:CXX'. Combine with --opt/--opt-mf/--opt-bs to hold "
+                         "the runtime toggles on in both variants.")
     ap.add_argument("--corpus", required=True, help="corpus directory")
     ap.add_argument("--dictionary", help="raw (LZ77 prefix) shared-dictionary "
                     "file to attach to every encode; prepared once, outside the "
@@ -704,35 +771,63 @@ def main():
     if not refs:
         refs = ["HEAD"]
 
-    # Expand to variants: (label, ref, opt_writer, opt_mf, opt_bs). Each *-ab
-    # flag A/Bs its own toggle at one ref; the other toggles can be held on
-    # for both variants via --opt / --opt-mf / --opt-bs.
-    if sum([args.opt_ab, args.opt_mf_ab, args.opt_bs_ab]) > 1:
-        sys.exit("--opt-ab, --opt-mf-ab and --opt-bs-ab are mutually "
-                 "exclusive; A/B one toggle at a time (hold the others on "
-                 "via --opt/--opt-mf/--opt-bs)")
+    # The compiler is a build-time axis (unlike the opt-* runtime toggles): the
+    # default compiler builds every ref, while --compiler-ab is its own A/B that
+    # builds one ref with two compilers. The two are mutually exclusive.
+    if args.compiler and args.compiler_ab:
+        sys.exit("--compiler sets one compiler for all builds; --compiler-ab "
+                 "A/Bs two compilers. Pass one or the other, not both.")
+    default_compiler = resolve_compiler(args.compiler)
+
+    # Expand to variants: (label, ref, opt_writer, opt_mf, opt_bs, compiler).
+    # Each *-ab flag A/Bs its own axis at one ref; the other toggles can be held
+    # on for both variants via --opt / --opt-mf / --opt-bs.
+    ab_flags = [args.opt_ab, args.opt_mf_ab, args.opt_bs_ab,
+                bool(args.compiler_ab)]
+    if sum(ab_flags) > 1:
+        sys.exit("--opt-ab, --opt-mf-ab, --opt-bs-ab and --compiler-ab are "
+                 "mutually exclusive; A/B one axis at a time (hold the other "
+                 "toggles on via --opt/--opt-mf/--opt-bs)")
+    cc = default_compiler
     if args.opt_ab:
         if len(refs) > 1:
             sys.exit("--opt-ab compares one ref with writer-opt off vs on; "
                      "pass at most one ref")
-        specs = [("orig", refs[0], False, args.opt_mf, args.opt_bs),
-                 ("opt", refs[0], True, args.opt_mf, args.opt_bs)]
+        specs = [("orig", refs[0], False, args.opt_mf, args.opt_bs, cc),
+                 ("opt", refs[0], True, args.opt_mf, args.opt_bs, cc)]
     elif args.opt_mf_ab:
         if len(refs) > 1:
             sys.exit("--opt-mf-ab compares one ref with matchfinder-opt off "
                      "vs on; pass at most one ref")
-        specs = [("orig", refs[0], args.opt, False, args.opt_bs),
-                 ("optmf", refs[0], args.opt, True, args.opt_bs)]
+        specs = [("orig", refs[0], args.opt, False, args.opt_bs, cc),
+                 ("optmf", refs[0], args.opt, True, args.opt_bs, cc)]
     elif args.opt_bs_ab:
         if len(refs) > 1:
             sys.exit("--opt-bs-ab compares one ref with block-splitter-opt "
                      "off vs on; pass at most one ref")
-        specs = [("orig", refs[0], args.opt, args.opt_mf, False),
-                 ("optbs", refs[0], args.opt, args.opt_mf, True)]
+        specs = [("orig", refs[0], args.opt, args.opt_mf, False, cc),
+                 ("optbs", refs[0], args.opt, args.opt_mf, True, cc)]
+    elif args.compiler_ab:
+        if len(refs) > 1:
+            sys.exit("--compiler-ab compares one ref built two ways; "
+                     "pass at most one ref")
+        parts = args.compiler_ab.split(",")
+        if len(parts) == 1:
+            a_spec, b_spec = None, parts[0]  # default vs B
+        elif len(parts) == 2:
+            a_spec, b_spec = (parts[0] or None), (parts[1] or None)
+        else:
+            sys.exit("--compiler-ab takes 'B' or 'A,B' (two compiler specs)")
+        ca, cb = resolve_compiler(a_spec), resolve_compiler(b_spec)
+        if ca[2] == cb[2]:
+            sys.exit(f"--compiler-ab: both sides resolve to '{ca[2]}'; "
+                     f"pass two different compilers")
+        specs = [(ca[2], refs[0], args.opt, args.opt_mf, args.opt_bs, ca),
+                 (cb[2], refs[0], args.opt, args.opt_mf, args.opt_bs, cb)]
     else:
-        specs = [(f"v{i}", r, args.opt, args.opt_mf, args.opt_bs)
+        specs = [(f"v{i}", r, args.opt, args.opt_mf, args.opt_bs, cc)
                  for i, r in enumerate(refs)]
-    using_worktree = any(r == "WORKTREE" for _, r, _, _, _ in specs)
+    using_worktree = any(r == "WORKTREE" for _, r, _, _, _, _ in specs)
 
     # Provenance gate: uncommitted changes to tracked files are not captured by
     # SHA worktrees. A WORKTREE variant is the deliberate way to benchmark them,
@@ -772,20 +867,28 @@ def main():
                 f"  - lower it:     sudo sysctl -w kernel.perf_event_paranoid=1"
                 f"  (persist in /etc/sysctl.d/)")
 
-    # Build each unique ref once (a ref can back two variants, e.g. --opt-ab).
+    # Build each unique (ref, compiler) once. A ref can back two variants that
+    # share a build (e.g. --opt-ab toggles at runtime), or two builds that
+    # differ only in compiler (--compiler-ab); the compiler label keys them
+    # apart.
     builds = {}
-    for _, ref, _, _, _ in specs:
-        if ref not in builds:
-            print(f"Building {ref} ...", file=sys.stderr)
-            builds[ref] = build_version(repo_root, ref)
+    for _, ref, _, _, _, compiler in specs:
+        key = (ref, compiler[2])
+        if key not in builds:
+            desc = ref if compiler[2] == "default" else f"{ref} [{compiler[2]}]"
+            print(f"Building {desc} ...", file=sys.stderr)
+            builds[key] = build_version(repo_root, ref, compiler)
     variants = [{"label": label, "ref": ref, "opt": opt, "opt_mf": opt_mf,
-                 "opt_bs": opt_bs, "version": builds[ref]}
-                for (label, ref, opt, opt_mf, opt_bs) in specs]
+                 "opt_bs": opt_bs, "version": builds[(ref, compiler[2])]}
+                for (label, ref, opt, opt_mf, opt_bs, compiler) in specs]
 
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     tags = "_".join(v["version"]["sha"][:8] + ("o" if v["opt"] else "")
                     + ("m" if v["opt_mf"] else "")
                     + ("b" if v["opt_bs"] else "")
+                    + ("-" + v["version"]["compiler"]
+                       if v["version"].get("compiler", "default") != "default"
+                       else "")
                     for v in variants)
     record_dir = repo_root / "benchmark" / "results" / f"{stamp}__{tags}"
     record_dir.mkdir(parents=True, exist_ok=True)
@@ -797,9 +900,11 @@ def main():
         env_state = read_env_state()
         irq_before = read_irq_counts()
         for v in variants:
+            clabel = v["version"].get("compiler", "default")
             print(f"\n== {v['label']}: {v['ref']} "
                   f"({v['version']['sha'][:12]}) opt={int(v['opt'])} "
-                  f"optmf={int(v['opt_mf'])} optbs={int(v['opt_bs'])} ==",
+                  f"optmf={int(v['opt_mf'])} optbs={int(v['opt_bs'])}"
+                  f"{'' if clabel == 'default' else '  cc=' + clabel} ==",
                   file=sys.stderr)
             v["artifacts"] = run_one(args, v["version"], v["label"],
                                      record_dir, wrapper, v["opt"],
@@ -829,7 +934,16 @@ def main():
     elif args.mode == "digest" and len(variants) >= 2:
         comparison = compare_digests(variants)
 
-    compiler = run(["c++", "--version"], capture=True, check=False).stdout
+    # Probe the version of each distinct compiler actually used to build a
+    # variant (keyed by label); 'default' resolves to the system c++.
+    def _cxx_version(cxx):
+        out = run([cxx or "c++", "--version"], capture=True, check=False).stdout
+        return (out or "").splitlines()[0] if out else None
+    compilers = {}
+    for _, _, _, _, _, comp in specs:
+        cc_, cxx_, clabel_ = comp
+        if clabel_ not in compilers:
+            compilers[clabel_] = _cxx_version(cxx_)
     manifest = {
         "timestamp": stamp,
         "hostname": os.uname().nodename,
@@ -843,6 +957,8 @@ def main():
         "opt_ab": args.opt_ab,
         "opt_mf_ab": args.opt_mf_ab,
         "opt_bs_ab": args.opt_bs_ab,
+        "compiler_arg": args.compiler,
+        "compiler_ab": args.compiler_ab,
         "malloc": {"spec": args.malloc, "preload": args.malloc_preload},
         "quality": args.quality,
         "lgwin": args.lgwin,
@@ -853,7 +969,7 @@ def main():
                         "size_bytes": Path(args.dictionary).stat().st_size,
                         "sha256": sha256_file(args.dictionary)}
                        if args.dictionary else None),
-        "compiler": (compiler or "").splitlines()[0] if compiler else None,
+        "compiler": compilers,
         "working_tree_dirty": dirty,
         "working_tree_diff_sha256": diff_sha,
         "variants": [{"label": v["label"], "ref": v["ref"], "opt": v["opt"],
