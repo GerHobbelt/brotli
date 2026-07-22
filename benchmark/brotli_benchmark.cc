@@ -83,6 +83,11 @@ static BrotliEncoderPreparedDictionary* g_prepared_dict = nullptr;
    reflects exactly the bytes the benchmark would compress. */
 static const BrotliEncoderMode g_mode = BROTLI_MODE_TEXT;
 
+/* Parallel-mode helpers, defined below with the digest/roundtrip modes. */
+static int ClampWorkerThreads(size_t n);
+static void RunParallelOverCorpus(int nthreads,
+                                  const std::function<void(size_t)>& body);
+
 static void LoadCorpus(const std::string& dir) {
   g_corpus.clear();
   g_corpus_total_size = 0;
@@ -95,29 +100,55 @@ static void LoadCorpus(const std::string& dir) {
   }
   std::sort(paths.begin(), paths.end());
 
+  /* Metadata pre-pass (cheap stats): keep non-empty files, in sorted order, and
+     size the g_corpus slots so the byte reads below can run index-aligned with
+     no locking. */
+  std::vector<std::pair<fs::path, size_t>> pending;
   for (const auto& path : paths) {
-    auto size = fs::file_size(path);
-    if (size == 0) continue;
-
-    CorpusFile cf;
-    cf.name = path.filename().string();
-    cf.data.resize(size);
-
-    FILE* f = fopen(path.c_str(), "rb");
-    if (!f) {
-      fprintf(stderr, "Warning: cannot open %s\n", path.c_str());
-      continue;
-    }
-    size_t read = fread(cf.data.data(), 1, size, f);
-    fclose(f);
-    if (read != size) {
-      fprintf(stderr, "Warning: short read on %s\n", path.c_str());
-      continue;
-    }
-
-    g_corpus_total_size += size;
-    g_corpus.push_back(std::move(cf));
+    std::error_code ec;
+    auto size = fs::file_size(path, ec);
+    if (ec || size == 0) continue;
+    pending.emplace_back(path, static_cast<size_t>(size));
   }
+  const size_t n = pending.size();
+  g_corpus.resize(n);
+  std::vector<char> ok(n, 1);  /* 0 = read failed, dropped after the loop */
+
+  auto load_one = [&](size_t i) {
+    CorpusFile& cf = g_corpus[i];
+    cf.name = pending[i].first.filename().string();
+    cf.data.resize(pending[i].second);
+    FILE* f = fopen(pending[i].first.c_str(), "rb");
+    if (!f) { ok[i] = 0; return; }
+    size_t got = fread(cf.data.data(), 1, pending[i].second, f);
+    fclose(f);
+    if (got != pending[i].second) ok[i] = 0;
+  };
+
+  /* The parallel per-file modes (--digest/--roundtrip) fan the reads across all
+     cores; the benchmark path keeps the load serial so it stays on its single
+     pinned core and doesn't perturb timing. */
+  const bool parallel = !g_digest_path.empty() || !g_roundtrip_path.empty();
+  if (parallel && n > 1) {
+    RunParallelOverCorpus(ClampWorkerThreads(n), load_one);
+  } else {
+    for (size_t i = 0; i < n; i++) load_one(i);
+  }
+
+  /* Compact out any files that failed to read (order preserved), and total the
+     rest. */
+  size_t w = 0;
+  for (size_t i = 0; i < n; i++) {
+    if (!ok[i]) {
+      fprintf(stderr, "Warning: failed to read %s\n",
+              pending[i].first.c_str());
+      continue;
+    }
+    g_corpus_total_size += g_corpus[i].data.size();
+    if (w != i) g_corpus[w] = std::move(g_corpus[i]);
+    w++;
+  }
+  g_corpus.resize(w);
 
   fprintf(stderr, "Loaded %zu files, %.1f MB total\n",
           g_corpus.size(), g_corpus_total_size / (1024.0 * 1024.0));
