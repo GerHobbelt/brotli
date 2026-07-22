@@ -17,18 +17,31 @@
  *   brotli_benchmark --digest=out.txt   # write per-file output hashes, no bench
  */
 
+/* For sched_setaffinity / CPU_SET (used to pin digest worker threads). Must be
+   defined before any system header pulls in <sched.h>. */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include <benchmark/benchmark.h>
 #include <brotli/encode.h>
 #include <brotli/shared_dictionary.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
+
+#if defined(__linux__)
+#include <sched.h>
+#endif
 
 namespace fs = std::filesystem;
 
@@ -44,6 +57,11 @@ static int g_quality = 6;
 static int g_lgwin = BROTLI_DEFAULT_WINDOW;
 static std::string g_corpus_dir;
 static std::string g_digest_path;
+/* Number of worker threads for --digest (--digest-threads); 1 = serial.
+   Digest is a correctness gate, not a timed run, so it parallelizes across all
+   cores. Each worker pins itself to a distinct CPU so the isolated benchmarking
+   core(s) -- which the scheduler otherwise leaves idle -- are used too. */
+static int g_digest_threads = 1;
 static int g_opt_writer = 0;  /* BROTLI_PARAM_OPT_WRITER toggle (--opt) */
 /* BROTLI_PARAM_OPT_BLOCK_SPLITTER toggle (--opt-block-splitter) */
 static int g_opt_block_splitter = 0;
@@ -188,34 +206,87 @@ static uint64_t Fnv1a64(const uint8_t* data, size_t len) {
   return h;
 }
 
+/* Pin the calling thread to a single logical CPU. Explicit pinning is what lets
+   the digest use the kernel's isolated cores (isolcpus keeps the scheduler off
+   them, so unpinned threads never land there). No-op off Linux. */
+static void PinCurrentThreadToCpu(int cpu) {
+#if defined(__linux__)
+  cpu_set_t set;
+  CPU_ZERO(&set);
+  CPU_SET(cpu, &set);
+  sched_setaffinity(0, sizeof(set), &set);  /* 0 = calling thread */
+#else
+  (void)cpu;
+#endif
+}
+
 /* Compress every corpus file at the configured quality/lgwin/mode and write a
    per-file digest of the compressed output: "name<TAB>len<TAB>fnv64". Used to
    verify two encoder versions produce bit-identical output. Returns 0 on
-   success. */
+   success.
+
+   Parallelized across g_digest_threads workers over the shared, read-only
+   g_corpus. Each worker owns a disjoint stride of file indices, so there is no
+   locking on the hot path; results are stored index-aligned and written in
+   corpus order, making the output byte-for-byte independent of thread count and
+   scheduling. */
 static int WriteDigest(const std::string& path) {
+  const size_t n = g_corpus.size();
+  int nthreads = g_digest_threads;
+  if (nthreads < 1) nthreads = 1;
+  if (static_cast<size_t>(nthreads) > n) nthreads = n ? static_cast<int>(n) : 1;
+
+  std::vector<std::string> lines(n);  /* lines[i] = digest line for g_corpus[i] */
+  std::atomic<bool> ok_all{true};
+  std::mutex err_mu;
+  std::string first_err;
+
+  auto worker = [&](int t) {
+    PinCurrentThreadToCpu(t);
+    for (size_t i = static_cast<size_t>(t); i < n;
+         i += static_cast<size_t>(nthreads)) {
+      if (!ok_all.load(std::memory_order_relaxed)) return;
+      const CorpusFile& cf = g_corpus[i];
+      size_t max_size = BrotliEncoderMaxCompressedSize(cf.data.size());
+      if (max_size == 0) max_size = cf.data.size() * 2;
+      std::vector<uint8_t> compressed(max_size);
+      size_t encoded_size = max_size;
+      if (!EncodeOneFile(cf.data.data(), cf.data.size(),
+                         compressed.data(), &encoded_size)) {
+        ok_all.store(false, std::memory_order_relaxed);
+        std::lock_guard<std::mutex> lk(err_mu);
+        if (first_err.empty()) first_err = cf.name;
+        return;
+      }
+      char tail[64];
+      snprintf(tail, sizeof(tail), "\t%zu\t%016llx\n",
+               encoded_size,
+               (unsigned long long)Fnv1a64(compressed.data(), encoded_size));
+      lines[i] = cf.name + tail;
+    }
+  };
+
+  std::vector<std::thread> pool;
+  for (int t = 1; t < nthreads; t++) pool.emplace_back(worker, t);
+  worker(0);
+  for (auto& th : pool) th.join();
+
+  if (!ok_all.load()) {
+    fprintf(stderr, "Error: compression failed for %s\n", first_err.c_str());
+    return 1;
+  }
+
   FILE* out = fopen(path.c_str(), "wb");
   if (!out) {
     fprintf(stderr, "Error: cannot open digest file %s\n", path.c_str());
     return 1;
   }
-  for (const auto& cf : g_corpus) {
-    size_t max_size = BrotliEncoderMaxCompressedSize(cf.data.size());
-    if (max_size == 0) max_size = cf.data.size() * 2;
-    std::vector<uint8_t> compressed(max_size);
-    size_t encoded_size = max_size;
-    bool ok = EncodeOneFile(cf.data.data(), cf.data.size(),
-                            compressed.data(), &encoded_size);
-    if (!ok) {
-      fprintf(stderr, "Error: compression failed for %s\n", cf.name.c_str());
-      fclose(out);
-      return 1;
-    }
-    fprintf(out, "%s\t%zu\t%016llx\n", cf.name.c_str(), encoded_size,
-            (unsigned long long)Fnv1a64(compressed.data(), encoded_size));
+  for (size_t i = 0; i < n; i++) {
+    if (!lines[i].empty()) fwrite(lines[i].data(), 1, lines[i].size(), out);
   }
   fclose(out);
-  fprintf(stderr, "Wrote digest for %zu files to %s\n", g_corpus.size(),
-          path.c_str());
+  fprintf(stderr, "Wrote digest for %zu files to %s (%d thread%s)\n",
+          n, path.c_str(), nthreads, nthreads == 1 ? "" : "s");
   return 0;
 }
 
@@ -294,6 +365,8 @@ static void ParseCustomFlags(int* argc, char** argv) {
       g_corpus_dir = argv[i] + 9;
     } else if (strncmp(argv[i], "--digest=", 9) == 0) {
       g_digest_path = argv[i] + 9;
+    } else if (strncmp(argv[i], "--digest-threads=", 17) == 0) {
+      g_digest_threads = atoi(argv[i] + 17);
     } else if (strncmp(argv[i], "--dictionary=", 13) == 0) {
       g_dictionary_path = argv[i] + 13;
     } else if (strcmp(argv[i], "--opt") == 0) {

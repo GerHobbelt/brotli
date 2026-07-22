@@ -501,7 +501,13 @@ def run_one(args, version, which, record_dir, wrapper, opt, opt_mf,
 
     if args.mode == "digest":
         out = record_dir / f"{which}.digest.txt"
-        cmd += [f"--digest={out}"]
+        # Digest is a correctness gate, not a timed run: it runs multi-threaded
+        # across all cores rather than pinned to the single isolated benchmark
+        # core. Drop the taskset/setarch/nice wrapper (the binary pins its own
+        # worker threads, one per CPU); keep this version's LD_LIBRARY_PATH +
+        # allocator preload via env.
+        cmd = ([binary] + base_args(args, corpus, opt, opt_mf, opt_bs)
+               + [f"--digest={out}", f"--digest-threads={args.digest_jobs}"])
         try:
             run(cmd, env=env)
         except subprocess.CalledProcessError as exc:
@@ -733,6 +739,13 @@ def main():
     ap.add_argument("--lgwin", type=int, default=22)
     ap.add_argument("--mode", choices=["time", "counters", "pprof", "digest"],
                     default="time")
+    ap.add_argument("--digest-jobs", dest="digest_jobs", type=int,
+                    default=os.cpu_count() or 1,
+                    help="worker threads for --mode digest (default: all "
+                         "logical CPUs). Digest is a correctness gate, not a "
+                         "timed run, so it uses every core -- including the "
+                         "isolated benchmarking core(s) the scheduler otherwise "
+                         "leaves idle. Set 1 for the old serial behavior.")
     ap.add_argument("--repetitions", type=int, default=5)
     ap.add_argument("--counters", default="CYCLES,INSTRUCTIONS",
                     help="perf counters for --mode counters")
@@ -954,6 +967,7 @@ def main():
         "pinned_core": None if args.no_pin else args.core,
         "isolation": isolation,
         "mode": args.mode,
+        "digest_jobs": args.digest_jobs if args.mode == "digest" else None,
         "opt_ab": args.opt_ab,
         "opt_mf_ab": args.opt_mf_ab,
         "opt_bs_ab": args.opt_bs_ab,
