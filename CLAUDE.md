@@ -31,8 +31,10 @@ Essentials that are easy to forget:
   provenance lands in `benchmark/results/<timestamp>__.../manifest.json`.
 - **Shared dictionaries**: `ab.py --dictionary FILE` attaches a raw (LZ77 prefix)
   dictionary to every encode (prepared once at startup, outside the timed loop).
-  The default corpus has a matching `~/Development/testdata/srp_desktop_256k.dict`.
   Ratio is reported **times smaller** (input÷compressed).
+- **Preferred corpus**: unless told otherwise, benchmark against
+  `~/Development/testdata/mobile_20260218` with its dictionary
+  `~/Development/testdata/srp_mobile_20260209.dict`.
 
 ## Builds
 
