@@ -35,6 +35,9 @@ Essentials that are easy to forget:
 - **Preferred corpus**: unless told otherwise, benchmark against
   `~/Development/testdata/mobile_20260218` with its dictionary
   `~/Development/testdata/srp_mobile_20260209.dict`.
+- **Compiler**: ab.py builds with **clang** by default — the production
+  compiler, so perf decisions gate on it. `--compiler gcc` is the regression
+  canary; `--compiler default` is whatever CMake auto-detects.
 
 ## Builds
 

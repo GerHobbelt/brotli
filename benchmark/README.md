@@ -153,15 +153,17 @@ it adds only ~2 s.
 
 ### Compiler (`--compiler`, `--compiler-ab`)
 
-By default the build uses whatever CMake auto-detects (the system default,
-GCC on this box). Two flags override that — this is a **build-time** axis,
-unlike the runtime opt toggles above:
+By default every ref builds with **clang** — the compiler production runs, so
+it is the compiler perf decisions are gated on (gcc stays available as a
+canary). Two flags override that — this is a **build-time** axis, unlike the
+runtime opt toggles above:
 
 - `--compiler SPEC` — build **every** ref with a given compiler. `SPEC` is a
-  family name (`gcc`, `clang`) or an explicit `CC:CXX` pair
+  family name (`gcc`, `clang`), `default` (whatever CMake auto-detects — the
+  system default, GCC on this box), or an explicit `CC:CXX` pair
   (`clang-18:clang++-18`). Sets `-DCMAKE_C_COMPILER`/`-DCMAKE_CXX_COMPILER`.
 - `--compiler-ab A,B` — build **one** ref with two compilers and compare them;
-  `A,B` are two specs, or just `B` to compare the system default vs `B`.
+  `A,B` are two specs, or just `B` to compare the default (clang) vs `B`.
   Combine with `--opt`/`--opt-mf`/`--opt-bs` to hold the runtime toggles on in
   both variants. Mutually exclusive with the other `*-ab` flags.
 

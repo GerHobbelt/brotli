@@ -286,12 +286,17 @@ _COMPILER_FAMILIES = {
 def resolve_compiler(spec):
     """Map a --compiler spec to (CC, CXX, label).
 
-    None -> the system default (whatever CMake auto-detects); label 'default'.
+    None -> clang, the compiler production runs (its builds share the
+    <sha>__clang cache dirs with an explicit --compiler clang).
+    'default' -> the system default (whatever CMake auto-detects); this is
+    the gcc canary on this box.
     A family name ('gcc', 'clang') -> its (CC, CXX) pair.
     An explicit 'CC:CXX' pair (e.g. 'clang-18:clang++-18') -> used verbatim.
     The label is a short filename/table-safe tag for the build cache dir and
     run record."""
     if spec is None:
+        spec = "clang"
+    if spec == "default":
         return (None, None, "default")
     if ":" in spec:
         cc, cxx = spec.split(":", 1)
@@ -302,7 +307,8 @@ def resolve_compiler(spec):
         cc, cxx = _COMPILER_FAMILIES[spec]
         return (cc, cxx, spec)
     sys.exit(f"unknown --compiler '{spec}'; use "
-             f"{', '.join(sorted(_COMPILER_FAMILIES))}, or an explicit 'CC:CXX'")
+             f"{', '.join(sorted(_COMPILER_FAMILIES))}, 'default', "
+             f"or an explicit 'CC:CXX'")
 
 
 def _safe_label(s):
@@ -790,15 +796,17 @@ def main():
                          "the other toggles on in both variants")
     ap.add_argument("--compiler",
                     help="compiler to build every ref with: a family name "
-                         "('gcc', 'clang') or an explicit 'CC:CXX' pair "
-                         "(e.g. 'clang-18:clang++-18'). Default: whatever CMake "
-                         "auto-detects (the system default).")
+                         "('gcc', 'clang'), 'default' (whatever CMake "
+                         "auto-detects), or an explicit 'CC:CXX' pair "
+                         "(e.g. 'clang-18:clang++-18'). Default: clang, the "
+                         "compiler production runs.")
     ap.add_argument("--compiler-ab", dest="compiler_ab",
                     help="build one ref with two compilers and compare them; "
                          "value is 'A,B' (two specs) or just 'B' (compare the "
-                         "system default vs B). Each spec is a family name or "
-                         "'CC:CXX'. Combine with --opt/--opt-mf/--opt-bs to hold "
-                         "the runtime toggles on in both variants.")
+                         "default compiler, clang, vs B). Each spec is a "
+                         "family name, 'default', or 'CC:CXX'. Combine with "
+                         "--opt/--opt-mf/--opt-bs to hold the runtime toggles "
+                         "on in both variants.")
     ap.add_argument("--corpus", required=True, help="corpus directory")
     ap.add_argument("--dictionary", help="raw (LZ77 prefix) shared-dictionary "
                     "file to attach to every encode; prepared once, outside the "
@@ -911,7 +919,7 @@ def main():
                      "pass at most one ref")
         parts = args.compiler_ab.split(",")
         if len(parts) == 1:
-            a_spec, b_spec = None, parts[0]  # default vs B
+            a_spec, b_spec = None, parts[0]  # default (clang) vs B
         elif len(parts) == 2:
             a_spec, b_spec = (parts[0] or None), (parts[1] or None)
         else:
