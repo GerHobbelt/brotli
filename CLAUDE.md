@@ -50,6 +50,6 @@ Essentials that are easy to forget:
 
 `perf` needs root here (`kernel.perf_event_paranoid=4`); gperftools capture via
 `--mode pprof` does not. View a captured `.prof` with
-`go tool pprof .ab-cache/build/<sha>/benchmark/brotli_benchmark <prof>`
+`~/go/bin/pprof .ab-cache/build/<sha>/benchmark/brotli_benchmark <prof>`
 (`-top -cum`, `-list <fn>`, `-focus=<fn>`); ab.py builds carry `-g` for
 line-level views without changing generated code.
