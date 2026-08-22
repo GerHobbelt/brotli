@@ -79,6 +79,45 @@ are also supported (e.g. `--benchmark_repetitions=N`,
 `--benchmark_perf_counters=CYCLES,INSTRUCTIONS,CACHE-MISSES`,
 `--benchmark_enable_random_interleaving=true`).
 
+## Metablock store benchmark (`brotli_metablock_benchmark`)
+
+A second benchmark isolates the **metablock build/store** step — the
+Command-array → bitstream conversion (`WriteMetaBlockInternal`) — from
+matchfinding. It runs matchfinding **once, untimed** to produce the per-metablock
+`Command` arrays (and the exact encoder output for the correctness gates), then
+the timed loop re-runs only the store step on those captured commands. This is
+the right tool for optimizing the encoder's store path (entropy coding, block
+splitting, histogram optimization) without paying for matchfinding on every
+iteration.
+
+```bash
+cmake --build build-bench -j$(nproc) --target brotli_metablock_benchmark
+export LD_LIBRARY_PATH=build-bench
+build-bench/benchmark/brotli_metablock_benchmark \
+  --corpus=$HOME/Development/testdata/srp_desktop --quality=6
+```
+
+- The benchmark is **bit-identical** to `brotli_benchmark` (verified via the
+  `--digest` gate): the untimed pass runs the real `WriteMetaBlockInternal`, so
+  the captured commands and output are exactly what the encoder produces, and
+  the timed store re-runs it on those commands.
+- **Quality 2..11 only.** Quality 0/1 use the fast-fragment path
+  (`BrotliCompressFragment*`), which has no separate metablock build/store step;
+  the benchmark rejects them with a clear error.
+- Supports the same flags as `brotli_benchmark` (`--quality`, `--lgwin`,
+  `--corpus`, `--dictionary`, `--digest`, `--roundtrip`, `--opt-writer`,
+  `--opt-matchfinder`, `--opt-block-splitter`) plus `--files=N` (limit to the
+  first N corpus files).
+- Via `ab.py`, select it with `--bench metablock` (the script builds
+  `brotli_metablock_benchmark` instead):
+
+```bash
+# bit-identity gate for a store-path change (must be identical):
+benchmark/ab.py WORKTREE --bench metablock --mode digest
+# then time just the store step:
+benchmark/ab.py WORKTREE --bench metablock
+```
+
 ## A/B comparison: `ab.py`
 
 `ab.py` builds one or more git refs, runs them under variance-reducing
@@ -249,6 +288,9 @@ manifest. With this set up, A/B runs here see <0.1% run-to-run variance.
 
 Other flags: `--lgwin`, `--repetitions`, `--no-pin`, `--no-aslr-disable`,
 `--malloc {tcmalloc,system,PATH}` (allocator to preload; default tcmalloc),
+`--bench {brotli_benchmark,metablock}` (which benchmark binary to build/run;
+`metablock` times only the Command-array → metablock store step — see the
+metablock section above),
 `--dictionary FILE` (attach a raw shared dictionary to every encode; its path,
 size, and SHA-256 are recorded in the manifest),
 `--bench-args "..."` (append arbitrary benchmark-binary flags to every variant,

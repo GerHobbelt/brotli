@@ -316,11 +316,13 @@ def _safe_label(s):
     return re.sub(r"[^A-Za-z0-9._+-]", "-", s)
 
 
-def _cmake_build(src, build, ref, tag, cc=None, cxx=None):
-    """Configure + build brotli_benchmark from source dir `src` into `build`.
+def _cmake_build(src, build, ref, tag, cc=None, cxx=None, target="brotli_benchmark"):
+    """Configure + build a benchmark from source dir `src` into `build`.
 
-    cc/cxx, when given, pin CMAKE_C_COMPILER/CMAKE_CXX_COMPILER; otherwise
-    CMake auto-detects the system default."""
+    `target` is the CMake target to build (brotli_benchmark or
+    brotli_metablock_benchmark). cc/cxx, when given, pin
+    CMAKE_C_COMPILER/CMAKE_CXX_COMPILER; otherwise CMake auto-detects the
+    system default."""
     build.mkdir(parents=True, exist_ok=True)
     log_path = build / "ab-build.log"
     print(f"  building {ref} ({tag}); output -> {log_path}", file=sys.stderr)
@@ -340,7 +342,7 @@ def _cmake_build(src, build, ref, tag, cc=None, cxx=None):
     steps = [
         configure,
         ["cmake", "--build", str(build), "-j", str(os.cpu_count()),
-         "--target", "brotli_benchmark"],
+         "--target", target],
     ]
     chunks = []
     for step in steps:
@@ -353,7 +355,8 @@ def _cmake_build(src, build, ref, tag, cc=None, cxx=None):
     log_path.write_text("".join(chunks))
 
 
-def build_version(repo_root, ref, compiler=(None, None, "default")):
+def build_version(repo_root, ref, compiler=(None, None, "default"),
+                  target="brotli_benchmark"):
     """Build a benchmarkable version and return an info dict.
 
     A normal ref is resolved to a SHA and materialized as a detached worktree,
@@ -374,8 +377,8 @@ def build_version(repo_root, ref, compiler=(None, None, "default")):
         diff_sha = hashlib.sha256(
             git(["diff", "HEAD"], cwd=repo_root).encode()).hexdigest()
         build = cache / "build" / f"worktree{suffix}"
-        binary = build / "benchmark" / "brotli_benchmark"
-        _cmake_build(repo_root, build, ref, f"{head[:12]}+wt", cc, cxx)
+        binary = build / "benchmark" / target
+        _cmake_build(repo_root, build, ref, f"{head[:12]}+wt", cc, cxx, target)
         if not binary.exists():
             sys.exit(f"build produced no benchmark binary at {binary}")
         return {
@@ -388,7 +391,7 @@ def build_version(repo_root, ref, compiler=(None, None, "default")):
     sha = git(["rev-parse", ref], cwd=repo_root)
     wt = cache / "wt" / sha
     build = cache / "build" / f"{sha}{suffix}"
-    binary = build / "benchmark" / "brotli_benchmark"
+    binary = build / "benchmark" / target
 
     if not wt.exists():
         wt.parent.mkdir(parents=True, exist_ok=True)
@@ -396,7 +399,7 @@ def build_version(repo_root, ref, compiler=(None, None, "default")):
             cwd=repo_root, capture=True)
 
     if not binary.exists():
-        _cmake_build(wt, build, ref, sha[:12], cc, cxx)
+        _cmake_build(wt, build, ref, sha[:12], cc, cxx, target)
 
     if not binary.exists():
         sys.exit(f"build produced no benchmark binary at {binary}")
@@ -808,6 +811,15 @@ def main():
                          "--opt-writer/--opt-mf/--opt-bs to hold the runtime "
                          "toggles on in both variants.")
     ap.add_argument("--corpus", required=True, help="corpus directory")
+    ap.add_argument("--bench",
+                    choices=["brotli_benchmark", "metablock"],
+                    default="brotli_benchmark",
+                    help="which benchmark binary to build and run. "
+                         "'brotli_benchmark' (default) times the whole "
+                         "encoder; 'metablock' (brotli_metablock_benchmark) "
+                         "times only the Command-array -> metablock store "
+                         "step (matchfinding run once, untimed). Metablock "
+                         "covers quality 2..11 only.")
     ap.add_argument("--dictionary", help="raw (LZ77 prefix) shared-dictionary "
                     "file to attach to every encode; prepared once, outside the "
                     "timed loop")
@@ -995,7 +1007,10 @@ def main():
         if key not in builds:
             desc = ref if compiler[2] == "default" else f"{ref} [{compiler[2]}]"
             print(f"Building {desc} ...", file=sys.stderr)
-            builds[key] = build_version(repo_root, ref, compiler)
+            builds[key] = build_version(
+                repo_root, ref, compiler,
+                target=("brotli_metablock_benchmark"
+                        if args.bench == "metablock" else "brotli_benchmark"))
     variants = [{"label": label, "ref": ref, "opt": opt, "opt_mf": opt_mf,
                  "opt_bs": opt_bs, "version": builds[(ref, compiler[2])]}
                 for (label, ref, opt, opt_mf, opt_bs, compiler) in specs]
@@ -1094,6 +1109,7 @@ def main():
         "pinned_core": None if args.no_pin else args.core,
         "isolation": isolation,
         "mode": args.mode,
+        "bench": args.bench,
         "threads": args.threads if args.mode in ("digest", "roundtrip") else None,
         "verify": verify_result,
         "opt_writer_ab": args.opt_writer_ab,
