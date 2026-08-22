@@ -48,9 +48,9 @@ build-bench/benchmark/brotli_benchmark \
   attaches the prepared result. Encoding always goes through the streaming API
   (`BrotliEncoderCompressStream`), since the one-shot `BrotliEncoderCompress`
   cannot take a custom dictionary.
-- `--opt` — route metablock build+store through the optimized writer path
-  (`BROTLI_PARAM_OPT_WRITER`); inert/bit-identical unless the branch carries the
-  optimized `*_opt.c` subtree
+- `--opt-writer` — route metablock build+store through the optimized writer
+  path (`BROTLI_PARAM_OPT_WRITER`); inert/bit-identical unless the branch
+  carries the optimized `*_opt.c` subtree
 - `--opt-matchfinder` — route the H5 backward-reference search through its
   optimized copy (`BROTLI_PARAM_OPT_MATCHFINDER`, the H15 hasher); inert unless
   the branch carries the optimized match-finder copies
@@ -116,31 +116,31 @@ positional refs.
 
 The encoder carries three runtime-selectable "optimized" paths: the
 metablock-writer copy (`c/enc/*_opt.c`, `BROTLI_PARAM_OPT_WRITER`, the
-benchmark's `--opt`), the match-finder copy (the H15 hasher /
+benchmark's `--opt-writer`), the match-finder copy (the H15 hasher /
 `backward_references_opt_inc.h`, `BROTLI_PARAM_OPT_MATCHFINDER`, the
 benchmark's `--opt-matchfinder`) and the HQ block-splitter copy
 (`block_splitter_opt.c`, `BROTLI_PARAM_OPT_BLOCK_SPLITTER`, the benchmark's
 `--opt-block-splitter`; only reachable at quality 10+). Six ab.py flags drive
 them:
 
-- `--opt` / `--opt-mf` / `--opt-bs` — run **every** ref with the optimized
-  writer / match finder / block splitter on (benchmark how the optimized
-  stack evolves across a chain). Default off = the reference paths.
-- `--opt-ab` / `--opt-mf-ab` / `--opt-bs-ab` — one build, compare that toggle
-  **OFF vs ON** at a single ref (default HEAD). This is the in-binary
+- `--opt-writer` / `--opt-mf` / `--opt-bs` — run **every** ref with the
+  optimized writer / match finder / block splitter on (benchmark how the
+  optimized stack evolves across a chain). Default off = the reference paths.
+- `--opt-writer-ab` / `--opt-mf-ab` / `--opt-bs-ab` — one build, compare that
+  toggle **OFF vs ON** at a single ref (default HEAD). This is the in-binary
   production A/B: same codegen, only the code path differs, and it needs no
   second commit. The `*-ab` flags are mutually exclusive; hold the other
-  toggles on in both variants by combining, e.g. `--opt --opt-mf-ab`.
+  toggles on in both variants by combining, e.g. `--opt-writer --opt-mf-ab`.
 
 ```bash
 # how much the optimized writer buys, on the current working copy:
-benchmark/ab.py WORKTREE --opt-ab --mode digest   # must be bit-identical
-benchmark/ab.py WORKTREE --opt-ab                 # then time it
+benchmark/ab.py WORKTREE --opt-writer-ab --mode digest   # must be bit-identical
+benchmark/ab.py WORKTREE --opt-writer-ab                 # then time it
 # ...or both in one shot with --verify (see below):
-benchmark/ab.py WORKTREE --opt-ab --verify
+benchmark/ab.py WORKTREE --opt-writer-ab --verify
 # how much the optimized match finder buys, with the writer opt held on:
-benchmark/ab.py WORKTREE --opt --opt-mf-ab --mode digest
-benchmark/ab.py WORKTREE --opt --opt-mf-ab
+benchmark/ab.py WORKTREE --opt-writer --opt-mf-ab --mode digest
+benchmark/ab.py WORKTREE --opt-writer --opt-mf-ab
 ```
 
 **`--verify`** collapses the two-step gate into one command: on a timing run
@@ -164,8 +164,9 @@ runtime opt toggles above:
   (`clang-18:clang++-18`). Sets `-DCMAKE_C_COMPILER`/`-DCMAKE_CXX_COMPILER`.
 - `--compiler-ab A,B` — build **one** ref with two compilers and compare them;
   `A,B` are two specs, or just `B` to compare the default (clang) vs `B`.
-  Combine with `--opt`/`--opt-mf`/`--opt-bs` to hold the runtime toggles on in
-  both variants. Mutually exclusive with the other `*-ab` flags.
+  Combine with `--opt-writer`/`--opt-mf`/`--opt-bs` to hold the runtime
+  toggles on in both variants. Mutually exclusive with the other `*-ab`
+  flags.
 
 Each compiler gets its own build-cache dir (CMake bakes the compiler into a
 build tree and refuses to change it); the SHA worktree checkout is shared. The

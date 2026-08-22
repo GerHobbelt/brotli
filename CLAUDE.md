@@ -23,9 +23,10 @@ Essentials that are easy to forget:
   `ab.py <refs...> --corpus <dir> --mode digest` — diffs per-file output hashes;
   valid only if **bit-identical**.
 - The encoder has a runtime **opt-writer toggle** (`BROTLI_PARAM_OPT_WRITER`,
-  the benchmark's `--opt`). `ab.py --opt-ab` does a single-build opt-OFF-vs-ON
-  A/B at one ref (e.g. `ab.py WORKTREE --opt-ab --mode digest`); `--opt` runs all
-  refs on the optimized path. The optimized path lives in `c/enc/*_opt.c`.
+  the benchmark's `--opt-writer`). `ab.py --opt-writer-ab` does a single-build
+  opt-OFF-vs-ON A/B at one ref (e.g. `ab.py WORKTREE --opt-writer-ab --mode
+digest`); `--opt-writer` runs all refs on the optimized path. The optimized
+  path lives in `c/enc/*_opt.c`.
 - Other modes: `--mode time` (default), `--mode counters`
   (`--counters CYCLES,...`), `--mode pprof`. Runs pin to isolated core 3;
   provenance lands in `benchmark/results/<timestamp>__.../manifest.json`.

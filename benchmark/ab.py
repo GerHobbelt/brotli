@@ -436,7 +436,7 @@ def base_args(args, corpus, opt, opt_mf, opt_bs):
     a = [f"--corpus={corpus}", f"--quality={args.quality}",
          f"--lgwin={args.lgwin}"]
     if opt:
-        a.append("--opt")  # BROTLI_PARAM_OPT_WRITER=1
+        a.append("--opt-writer")  # BROTLI_PARAM_OPT_WRITER=1
     if opt_mf:
         a.append("--opt-matchfinder")  # BROTLI_PARAM_OPT_MATCHFINDER=1
     if opt_bs:
@@ -774,10 +774,10 @@ def main():
                          "WORKTREE builds the current (uncommitted) tree.")
     ap.add_argument("--baseline", help="alias for the first positional ref")
     ap.add_argument("--candidate", help="alias for the second positional ref")
-    ap.add_argument("--opt", action="store_true",
+    ap.add_argument("--opt-writer", action="store_true",
                     help="run every ref with the optimized writer on "
                          "(BROTLI_PARAM_OPT_WRITER=1)")
-    ap.add_argument("--opt-ab", dest="opt_ab", action="store_true",
+    ap.add_argument("--opt-writer-ab", action="store_true",
                     help="one build, compare writer-opt OFF vs ON at a single "
                          "ref (default HEAD) -- the production toggle A/B")
     ap.add_argument("--opt-mf", dest="opt_mf", action="store_true",
@@ -785,15 +785,15 @@ def main():
                          "(BROTLI_PARAM_OPT_MATCHFINDER=1)")
     ap.add_argument("--opt-mf-ab", dest="opt_mf_ab", action="store_true",
                     help="one build, compare matchfinder-opt OFF vs ON at a "
-                         "single ref; combine with --opt to hold the writer "
-                         "on in both variants")
+                         "single ref; combine with --opt-writer to hold the "
+                         "writer on in both variants")
     ap.add_argument("--opt-bs", dest="opt_bs", action="store_true",
                     help="run every ref with the optimized HQ block splitter "
                          "on (BROTLI_PARAM_OPT_BLOCK_SPLITTER=1)")
     ap.add_argument("--opt-bs-ab", dest="opt_bs_ab", action="store_true",
                     help="one build, compare block-splitter-opt OFF vs ON at "
-                         "a single ref; combine with --opt/--opt-mf to hold "
-                         "the other toggles on in both variants")
+                         "a single ref; combine with --opt-writer/--opt-mf to "
+                         "hold the other toggles on in both variants")
     ap.add_argument("--compiler",
                     help="compiler to build every ref with: a family name "
                          "('gcc', 'clang'), 'default' (whatever CMake "
@@ -805,8 +805,8 @@ def main():
                          "value is 'A,B' (two specs) or just 'B' (compare the "
                          "default compiler, clang, vs B). Each spec is a "
                          "family name, 'default', or 'CC:CXX'. Combine with "
-                         "--opt/--opt-mf/--opt-bs to hold the runtime toggles "
-                         "on in both variants.")
+                         "--opt-writer/--opt-mf/--opt-bs to hold the runtime "
+                         "toggles on in both variants.")
     ap.add_argument("--corpus", required=True, help="corpus directory")
     ap.add_argument("--dictionary", help="raw (LZ77 prefix) shared-dictionary "
                     "file to attach to every encode; prepared once, outside the "
@@ -887,32 +887,32 @@ def main():
 
     # Expand to variants: (label, ref, opt_writer, opt_mf, opt_bs, compiler).
     # Each *-ab flag A/Bs its own axis at one ref; the other toggles can be held
-    # on for both variants via --opt / --opt-mf / --opt-bs.
-    ab_flags = [args.opt_ab, args.opt_mf_ab, args.opt_bs_ab,
+    # on for both variants via --opt-writer / --opt-mf / --opt-bs.
+    ab_flags = [args.opt_writer_ab, args.opt_mf_ab, args.opt_bs_ab,
                 bool(args.compiler_ab)]
     if sum(ab_flags) > 1:
-        sys.exit("--opt-ab, --opt-mf-ab, --opt-bs-ab and --compiler-ab are "
-                 "mutually exclusive; A/B one axis at a time (hold the other "
-                 "toggles on via --opt/--opt-mf/--opt-bs)")
+        sys.exit("--opt-writer-ab, --opt-mf-ab, --opt-bs-ab and --compiler-ab "
+                 "are mutually exclusive; A/B one axis at a time (hold the "
+                 "other toggles on via --opt-writer/--opt-mf/--opt-bs)")
     cc = default_compiler
-    if args.opt_ab:
+    if args.opt_writer_ab:
         if len(refs) > 1:
-            sys.exit("--opt-ab compares one ref with writer-opt off vs on; "
-                     "pass at most one ref")
+            sys.exit("--opt-writer-ab compares one ref with writer-opt off vs "
+                     "on; pass at most one ref")
         specs = [("orig", refs[0], False, args.opt_mf, args.opt_bs, cc),
                  ("opt", refs[0], True, args.opt_mf, args.opt_bs, cc)]
     elif args.opt_mf_ab:
         if len(refs) > 1:
             sys.exit("--opt-mf-ab compares one ref with matchfinder-opt off "
                      "vs on; pass at most one ref")
-        specs = [("orig", refs[0], args.opt, False, args.opt_bs, cc),
-                 ("optmf", refs[0], args.opt, True, args.opt_bs, cc)]
+        specs = [("orig", refs[0], args.opt_writer, False, args.opt_bs, cc),
+                 ("optmf", refs[0], args.opt_writer, True, args.opt_bs, cc)]
     elif args.opt_bs_ab:
         if len(refs) > 1:
             sys.exit("--opt-bs-ab compares one ref with block-splitter-opt "
                      "off vs on; pass at most one ref")
-        specs = [("orig", refs[0], args.opt, args.opt_mf, False, cc),
-                 ("optbs", refs[0], args.opt, args.opt_mf, True, cc)]
+        specs = [("orig", refs[0], args.opt_writer, args.opt_mf, False, cc),
+                 ("optbs", refs[0], args.opt_writer, args.opt_mf, True, cc)]
     elif args.compiler_ab:
         if len(refs) > 1:
             sys.exit("--compiler-ab compares one ref built two ways; "
@@ -928,10 +928,12 @@ def main():
         if ca[2] == cb[2]:
             sys.exit(f"--compiler-ab: both sides resolve to '{ca[2]}'; "
                      f"pass two different compilers")
-        specs = [(ca[2], refs[0], args.opt, args.opt_mf, args.opt_bs, ca),
-                 (cb[2], refs[0], args.opt, args.opt_mf, args.opt_bs, cb)]
+        specs = [(ca[2], refs[0], args.opt_writer, args.opt_mf, args.opt_bs,
+                  ca),
+                 (cb[2], refs[0], args.opt_writer, args.opt_mf, args.opt_bs,
+                  cb)]
     else:
-        specs = [(f"v{i}", r, args.opt, args.opt_mf, args.opt_bs, cc)
+        specs = [(f"v{i}", r, args.opt_writer, args.opt_mf, args.opt_bs, cc)
                  for i, r in enumerate(refs)]
     using_worktree = any(r == "WORKTREE" for _, r, _, _, _, _ in specs)
 
@@ -943,7 +945,7 @@ def main():
                      "for --mode digest the check IS the run.")
         if len(specs) < 2:
             sys.exit("--verify compares variants for bit-identity; give >= 2 "
-                     "(two refs, or a toggle A/B like --opt-ab).")
+                     "(two refs, or a toggle A/B like --opt-writer-ab).")
 
     # Provenance gate: uncommitted changes to tracked files are not captured by
     # SHA worktrees. A WORKTREE variant is the deliberate way to benchmark them,
@@ -984,7 +986,7 @@ def main():
                 f"  (persist in /etc/sysctl.d/)")
 
     # Build each unique (ref, compiler) once. A ref can back two variants that
-    # share a build (e.g. --opt-ab toggles at runtime), or two builds that
+    # share a build (e.g. --opt-writer-ab toggles at runtime), or two builds that
     # differ only in compiler (--compiler-ab); the compiler label keys them
     # apart.
     builds = {}
@@ -1094,7 +1096,7 @@ def main():
         "mode": args.mode,
         "threads": args.threads if args.mode in ("digest", "roundtrip") else None,
         "verify": verify_result,
-        "opt_ab": args.opt_ab,
+        "opt_writer_ab": args.opt_writer_ab,
         "opt_mf_ab": args.opt_mf_ab,
         "opt_bs_ab": args.opt_bs_ab,
         "compiler_arg": args.compiler,

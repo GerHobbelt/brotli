@@ -7,7 +7,7 @@
  * Usage:
  *   brotli_benchmark [--quality=N] [--lgwin=N] [--corpus=DIR]
  *                    [--digest=FILE] [--roundtrip=FILE] [--threads=N]
- *                    [--dictionary=FILE] [--opt] [Google Benchmark flags...]
+ *                    [--dictionary=FILE] [--opt-writer] [Google Benchmark flags...]
  *
  * Examples:
  *   brotli_benchmark
@@ -68,7 +68,7 @@ static std::string g_roundtrip_path;
    isolated benchmarking core(s) -- which the scheduler otherwise leaves idle --
    are used too. */
 static int g_worker_threads = 1;
-static int g_opt_writer = 0;  /* BROTLI_PARAM_OPT_WRITER toggle (--opt) */
+static int g_opt_writer = 0;  /* BROTLI_PARAM_OPT_WRITER toggle (--opt-writer) */
 /* BROTLI_PARAM_OPT_BLOCK_SPLITTER toggle (--opt-block-splitter) */
 static int g_opt_block_splitter = 0;
 
@@ -481,10 +481,10 @@ static void ParseCustomFlags(int* argc, char** argv) {
       g_worker_threads = atoi(argv[i] + 10);
     } else if (strncmp(argv[i], "--dictionary=", 13) == 0) {
       g_dictionary_path = argv[i] + 13;
-    } else if (strcmp(argv[i], "--opt") == 0) {
+    } else if (strcmp(argv[i], "--opt-writer") == 0) {
       g_opt_writer = 1;
-    } else if (strncmp(argv[i], "--opt=", 6) == 0) {
-      g_opt_writer = atoi(argv[i] + 6);
+    } else if (strncmp(argv[i], "--opt-writer=", 13) == 0) {
+      g_opt_writer = atoi(argv[i] + 13);
     } else if (strcmp(argv[i], "--opt-block-splitter") == 0) {
       g_opt_block_splitter = 1;
     } else if (strncmp(argv[i], "--opt-block-splitter=", 21) == 0) {
