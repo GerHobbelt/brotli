@@ -47,6 +47,10 @@ struct MBB_Prepared {
   int mbs_cap;
   uint16_t header_last_bytes;
   uint8_t header_last_bytes_bits;
+  /* Scratch Command buffer for MBB_Store, sized at prepare time to the largest
+     captured metablock so the timed loop never allocates. */
+  Command* cmd_scratch;
+  size_t cmd_scratch_cap;
 };
 
 /* Mirrors EncodeData's matchfinding portion, then captures the metablock and
@@ -246,6 +250,8 @@ MBB_Prepared* MBB_Prepare(int quality, int lgwin, int mode, size_t size_hint,
   p->mbs_cap = 8;
   p->header_last_bytes = s->last_bytes_;
   p->header_last_bytes_bits = s->last_bytes_bits_;
+  p->cmd_scratch = NULL;
+  p->cmd_scratch_cap = 0;
   p->mbs = (MBB_Metablock*)BROTLI_ALLOC(m, MBB_Metablock, p->mbs_cap);
   if (BROTLI_IS_NULL(p->mbs)) {
     free(p);
@@ -294,6 +300,20 @@ MBB_Prepared* MBB_Prepare(int quality, int lgwin, int mode, size_t size_hint,
   }
   BROTLI_FREE(m, storage);
 
+  {
+    size_t max_cmds = 1;
+    int i;
+    for (i = 0; i < p->nmb; i++) {
+      if (p->mbs[i].num_commands > max_cmds) max_cmds = p->mbs[i].num_commands;
+    }
+    p->cmd_scratch_cap = max_cmds;
+    p->cmd_scratch = BROTLI_ALLOC(m, Command, max_cmds);
+    if (BROTLI_IS_OOM(m) || BROTLI_IS_NULL(p->cmd_scratch)) {
+      MBB_DestroyPrepared(p);
+      return NULL;
+    }
+  }
+
   if (nmb_out) *nmb_out = p->nmb;
   if (compressed_size_out) *compressed_size_out = output ? out : 0;
   return p;
@@ -324,14 +344,10 @@ size_t MBB_Store(const MBB_Prepared* p, int i, const uint8_t* input,
   /* The store (BrotliBuildMetaBlock -> RecomputeDistancePrefixes) rewrites
      dist_prefix_ in place. The real encoder never reuses a command array, but
      the timed loop re-runs the same captured commands each iteration, so copy
-     them to keep the captured state pristine. */
-  static Command* cmd_copy = NULL;
-  static size_t cmd_copy_cap = 0;
-  if (mb->num_commands > cmd_copy_cap) {
-    free(cmd_copy);
-    cmd_copy_cap = mb->num_commands;
-    cmd_copy = (Command*)malloc(cmd_copy_cap * sizeof(Command));
-  }
+     them into the prepare-time scratch to keep the captured state pristine.
+     (The copy is timed; it is a small constant overhead on both sides of an
+     A/B.) */
+  Command* cmd_copy = p->cmd_scratch;
   memcpy(cmd_copy, mb->commands, mb->num_commands * sizeof(Command));
 
   size_t storage_ix = *last_bytes_bits;
@@ -355,6 +371,7 @@ void MBB_DestroyPrepared(MBB_Prepared* p) {
   for (int i = 0; i < p->nmb; i++) {
     if (p->mbs[i].commands) BROTLI_FREE(m, p->mbs[i].commands);
   }
+  if (p->cmd_scratch) BROTLI_FREE(m, p->cmd_scratch);
   BROTLI_FREE(m, p->mbs);
   BrotliEncoderDestroyInstance(s);
   free(p);

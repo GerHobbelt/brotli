@@ -101,6 +101,11 @@ build-bench/benchmark/brotli_metablock_benchmark \
   `--digest` gate): the untimed pass runs the real `WriteMetaBlockInternal`, so
   the captured commands and output are exactly what the encoder produces, and
   the timed store re-runs it on those commands.
+- **Replay self-check**: at startup (every mode) the benchmark replays each
+  captured metablock through the timed code path and verifies the bytes against
+  the prepare-pass output, aborting on divergence. The `--digest` gate hashes
+  the prepare output and cannot see a bug in the replayed state; this check
+  can, and it doubles as a deterministic warmup of the replay buffers.
 - **Quality 2..11 only.** Quality 0/1 use the fast-fragment path
   (`BrotliCompressFragment*`), which has no separate metablock build/store step;
   the benchmark rejects them with a clear error.

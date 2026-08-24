@@ -10,7 +10,12 @@
  *      metablocks exactly as the real encoder does, and capture each metablock's
  *      Command array + pre-write encoder state (see brotli_metablock_bench_impl.c,
  *      which compiles the encoder in and reaches its static helpers).
- *   2. (timed, in the loop) turn those Command arrays back into metablocks via the
+ *   2. (untimed, once) replay every captured metablock through MBB_Store -- the
+ *      exact code path the timed loop runs -- and verify the bytes against the
+ *      step-1 output, aborting on divergence. This catches state-capture bugs
+ *      that --digest cannot see (the digest hashes the step-1 output, not the
+ *      replay), and doubles as a deterministic warmup of the replay buffers.
+ *   3. (timed, in the loop) turn those Command arrays back into metablocks via the
  *      encoder's real WriteMetaBlockInternal.
  *
  * The --digest / --roundtrip modes use the exact encoder output produced in step 1
@@ -67,6 +72,9 @@ struct PreparedFile {
 
 static std::vector<CorpusFile> g_corpus;
 static std::vector<PreparedFile> g_prepared;
+/* Output buffer shared by the replay-verification pass and the timed loop
+   (sized once after PrepareAll, so the timed loop never faults fresh pages). */
+static std::vector<uint8_t> g_storage;
 static size_t g_corpus_total_size = 0;
 static int g_quality = 6;
 static int g_lgwin = BROTLI_DEFAULT_WINDOW;
@@ -236,15 +244,52 @@ static int WriteRoundtrip(const std::string& path) {
   return 0;
 }
 
+/* Replay every captured metablock through MBB_Store -- the exact code path the
+   timed loop runs -- chaining the bit-level stream state per file, and require
+   the bytes to match the prepare-pass encoder output. A capture bug (stale
+   prev_byte, wrong context mode, ...) can silently flip metablocks onto a
+   different, differently-priced code path (e.g. the uncompressed-store
+   fallback) while the --digest gate stays green, because the digest hashes the
+   prepare output, not the replay. */
+static bool VerifyReplay() {
+  int verified_mb = 0;
+  for (const auto& f : g_prepared) {
+    uint16_t lb;
+    uint8_t lbb;
+    MBB_GetHeader(f.prepared, &lb, &lbb);
+    size_t offset = 0;
+    for (int i = 0; i < f.nmb; i++) {
+      size_t n = MBB_Store(f.prepared, i, f.input_buf.data(), f.mask,
+                           g_storage.data(), &lb, &lbb);
+      if (offset + n > f.compressed.size() ||
+          memcmp(g_storage.data(), f.compressed.data() + offset, n) != 0) {
+        fprintf(stderr,
+                "Error: replay of %s metablock %d/%d diverges from the "
+                "prepare-pass output (stream offset %zu, %zu bytes); the "
+                "captured state is wrong and timings would be invalid\n",
+                f.name.c_str(), i, f.nmb, offset, n);
+        return false;
+      }
+      offset += n;
+      verified_mb++;
+    }
+    if (offset != f.compressed.size()) {
+      fprintf(stderr,
+              "Error: replay of %s produced %zu bytes, prepare produced %zu\n",
+              f.name.c_str(), offset, f.compressed.size());
+      return false;
+    }
+  }
+  fprintf(stderr, "Replay verified: %d metablocks bit-identical to the "
+          "prepare-pass output\n", verified_mb);
+  return true;
+}
+
 static void BM_MetablockStore(benchmark::State& state) {
   if (g_prepared.empty()) {
     state.SkipWithError("No corpus files prepared");
     return;
   }
-
-  size_t max_size = 0;
-  for (const auto& f : g_prepared) max_size = std::max(max_size, f.file_size);
-  std::vector<uint8_t> storage(2 * max_size + 503);
 
   /* Sink so the store work cannot be optimized away. */
   static volatile uint64_t g_sink;
@@ -257,7 +302,7 @@ static void BM_MetablockStore(benchmark::State& state) {
       uint8_t lbb;
       MBB_GetHeader(f.prepared, &lb, &lbb);
       for (int i = 0; i < f.nmb; i++) {
-        MBB_Store(f.prepared, i, f.input_buf.data(), f.mask, storage.data(),
+        MBB_Store(f.prepared, i, f.input_buf.data(), f.mask, g_storage.data(),
                   &lb, &lbb);
       }
       checksum += (uint64_t)lb * 31u + lbb;
@@ -287,9 +332,11 @@ static void BM_MetablockStore(benchmark::State& state) {
   state.counters["Metablocks"] = static_cast<double>(total_mb);
 }
 
+/* No fixed iteration count: Google Benchmark's calibration picks enough
+   corpus passes per repetition to fill min_time (its probe runs double as
+   warmup), so single-shot timer/scheduling noise is averaged out. */
 BENCHMARK(BM_MetablockStore)
     ->Unit(benchmark::kMillisecond)
-    ->Iterations(1)
     ->UseRealTime();
 
 static void ParseCustomFlags(int* argc, char** argv) {
@@ -381,6 +428,13 @@ int main(int argc, char** argv) {
   if (!PrepareAll()) return 1;
   fprintf(stderr, "Prepared %zu files (%d metablocks total)\n", g_prepared.size(),
           [&] { int t = 0; for (auto& f : g_prepared) t += f.nmb; return t; }());
+
+  {
+    size_t max_size = 0;
+    for (const auto& f : g_prepared) max_size = std::max(max_size, f.file_size);
+    g_storage.assign(2 * max_size + 503, 0);
+  }
+  if (!VerifyReplay()) return 1;
 
   if (!g_digest_path.empty()) {
     return WriteDigest(g_digest_path);
