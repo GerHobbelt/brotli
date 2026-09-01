@@ -441,7 +441,7 @@ def base_args(args, corpus, opt, opt_mf, opt_bs):
     if opt:
         a.append("--opt-writer")  # BROTLI_PARAM_OPT_WRITER=1
     if opt_mf:
-        a.append("--opt-matchfinder")  # BROTLI_PARAM_OPT_MATCHFINDER=1
+        a.append("--opt-matchfinder=%d" % opt_mf)  # BROTLI_PARAM_OPT_MATCHFINDER
     if opt_bs:
         a.append("--opt-block-splitter")  # BROTLI_PARAM_OPT_BLOCK_SPLITTER=1
     if args.dictionary:
@@ -607,7 +607,8 @@ def variant_tag(v):
     clabel = v["version"].get("compiler", "default")
     return (f"{v['ref']}@{v['version']['sha'][:9]}"
             + ("  opt" if v["opt"] else "")
-            + ("  optmf" if v["opt_mf"] else "")
+            + (("  optmf" if v["opt_mf"] == 1 else "  optmf%d" % v["opt_mf"])
+               if v["opt_mf"] else "")
             + ("  optbs" if v["opt_bs"] else "")
             + (f"  cc:{clabel}" if clabel != "default" else ""))
 
@@ -828,6 +829,16 @@ def main():
     ap.add_argument("--opt-writer-ab", action="store_true",
                     help="one build, compare writer-opt OFF vs ON at a single "
                          "ref (default HEAD) -- the production toggle A/B")
+    ap.add_argument("--mf-core", dest="mf_core", type=int, default=1,
+                    choices=[1, 2],
+                    help="which optimized match-finder core --opt-mf/"
+                         "--opt-mf-ab select: 1 = H59 (byte-tag), 2 = H79 "
+                         "(packed-index). Default 1.")
+    ap.add_argument("--mf-core-ab", dest="mf_core_ab", default=None,
+                    help="one build, compare two match-finder cores at a "
+                         "single ref: 'A,B' with values from {0=off,1=H59,"
+                         "2=H79}, e.g. '1,2'. Mutually exclusive with the "
+                         "other *-ab flags.")
     ap.add_argument("--opt-mf", dest="opt_mf", action="store_true",
                     help="run every ref with the optimized match finder on "
                          "(BROTLI_PARAM_OPT_MATCHFINDER=1)")
@@ -950,8 +961,9 @@ def main():
     # Expand to variants: (label, ref, opt_writer, opt_mf, opt_bs, compiler).
     # Each *-ab flag A/Bs its own axis at one ref; the other toggles can be held
     # on for both variants via --opt-writer / --opt-mf / --opt-bs.
+    mf_on = args.mf_core if args.opt_mf else 0
     ab_flags = [args.opt_writer_ab, args.opt_mf_ab, args.opt_bs_ab,
-                bool(args.compiler_ab)]
+                bool(args.compiler_ab), bool(args.mf_core_ab)]
     if sum(ab_flags) > 1:
         sys.exit("--opt-writer-ab, --opt-mf-ab, --opt-bs-ab and --compiler-ab "
                  "are mutually exclusive; A/B one axis at a time (hold the "
@@ -961,20 +973,36 @@ def main():
         if len(refs) > 1:
             sys.exit("--opt-writer-ab compares one ref with writer-opt off vs "
                      "on; pass at most one ref")
-        specs = [("orig", refs[0], False, args.opt_mf, args.opt_bs, cc),
-                 ("opt", refs[0], True, args.opt_mf, args.opt_bs, cc)]
+        specs = [("orig", refs[0], False, mf_on, args.opt_bs, cc),
+                 ("opt", refs[0], True, mf_on, args.opt_bs, cc)]
     elif args.opt_mf_ab:
         if len(refs) > 1:
             sys.exit("--opt-mf-ab compares one ref with matchfinder-opt off "
                      "vs on; pass at most one ref")
-        specs = [("orig", refs[0], args.opt_writer, False, args.opt_bs, cc),
-                 ("optmf", refs[0], args.opt_writer, True, args.opt_bs, cc)]
+        mf_label = "optmf" if args.mf_core == 1 else "optmf%d" % args.mf_core
+        specs = [("orig", refs[0], args.opt_writer, 0, args.opt_bs, cc),
+                 (mf_label, refs[0], args.opt_writer, args.mf_core,
+                  args.opt_bs, cc)]
+    elif args.mf_core_ab:
+        if len(refs) > 1:
+            sys.exit("--mf-core-ab compares one ref with two match-finder "
+                     "cores; pass at most one ref")
+        parts = args.mf_core_ab.split(",")
+        if (len(parts) != 2 or not all(p in ("0", "1", "2") for p in parts)
+                or parts[0] == parts[1]):
+            sys.exit("--mf-core-ab takes 'A,B', two different values from "
+                     "{0,1,2}")
+        ca_v, cb_v = int(parts[0]), int(parts[1])
+        specs = [("mf%d" % ca_v, refs[0], args.opt_writer, ca_v,
+                  args.opt_bs, cc),
+                 ("mf%d" % cb_v, refs[0], args.opt_writer, cb_v,
+                  args.opt_bs, cc)]
     elif args.opt_bs_ab:
         if len(refs) > 1:
             sys.exit("--opt-bs-ab compares one ref with block-splitter-opt "
                      "off vs on; pass at most one ref")
-        specs = [("orig", refs[0], args.opt_writer, args.opt_mf, False, cc),
-                 ("optbs", refs[0], args.opt_writer, args.opt_mf, True, cc)]
+        specs = [("orig", refs[0], args.opt_writer, mf_on, False, cc),
+                 ("optbs", refs[0], args.opt_writer, mf_on, True, cc)]
     elif args.compiler_ab:
         if len(refs) > 1:
             sys.exit("--compiler-ab compares one ref built two ways; "
@@ -990,12 +1018,12 @@ def main():
         if ca[2] == cb[2]:
             sys.exit(f"--compiler-ab: both sides resolve to '{ca[2]}'; "
                      f"pass two different compilers")
-        specs = [(ca[2], refs[0], args.opt_writer, args.opt_mf, args.opt_bs,
+        specs = [(ca[2], refs[0], args.opt_writer, mf_on, args.opt_bs,
                   ca),
-                 (cb[2], refs[0], args.opt_writer, args.opt_mf, args.opt_bs,
+                 (cb[2], refs[0], args.opt_writer, mf_on, args.opt_bs,
                   cb)]
     else:
-        specs = [(f"v{i}", r, args.opt_writer, args.opt_mf, args.opt_bs, cc)
+        specs = [(f"v{i}", r, args.opt_writer, mf_on, args.opt_bs, cc)
                  for i, r in enumerate(refs)]
     using_worktree = any(r == "WORKTREE" for _, r, _, _, _, _ in specs)
 
