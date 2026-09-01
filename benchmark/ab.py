@@ -1066,13 +1066,19 @@ def main():
                 for (label, ref, opt, opt_mf, opt_bs, compiler) in specs]
 
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    tags = "_".join(v["version"]["sha"][:8] + ("o" if v["opt"] else "")
-                    + ("m" if v["opt_mf"] else "")
-                    + ("b" if v["opt_bs"] else "")
-                    + ("-" + v["version"]["compiler"]
-                       if v["version"].get("compiler", "default") != "default"
-                       else "")
-                    for v in variants)
+    per_tags = [v["version"]["sha"][:8] + ("o" if v["opt"] else "")
+                + ("m" if v["opt_mf"] else "")
+                + ("b" if v["opt_bs"] else "")
+                + ("-" + v["version"]["compiler"]
+                   if v["version"].get("compiler", "default") != "default"
+                   else "")
+                for v in variants]
+    tags = "_".join(per_tags)
+    # A long chain of refs overflows NAME_MAX (255 bytes). Name the record by
+    # the chain's endpoints and length instead; manifest.json lists every
+    # variant in full either way.
+    if len(f"{stamp}__{tags}".encode()) > 200:
+        tags = f"{per_tags[0]}_..{len(per_tags) - 2}.._{per_tags[-1]}"
     record_dir = repo_root / "benchmark" / "results" / f"{stamp}__{tags}"
     record_dir.mkdir(parents=True, exist_ok=True)
 
