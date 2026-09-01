@@ -150,11 +150,12 @@ static void DeriveConfig(const uint8_t* h, EncConfig* c) {
    ignore the result -- BrotliEncoderSetParameter returns false for a parameter
    the current build doesn't implement, which simply leaves that toggle off.
    Every branch descends from `benchmarking`, which defines
-   BROTLI_PARAM_OPT_WRITER = 10, so ids 10..12 are always inside the parameter
-   enum's representable range. */
-#define OPT_PARAM_WRITER 10
-#define OPT_PARAM_MATCHFINDER 11
-#define OPT_PARAM_BLOCK_SPLITTER 12
+   BROTLI_PARAM_OPT_WRITER = 13, so ids 13..15 are always inside the parameter
+   enum's representable range. (10..12 are upstream's Base64/SIMD-hasher
+   params -- never set them blindly here.) */
+#define OPT_PARAM_WRITER 13
+#define OPT_PARAM_MATCHFINDER 14
+#define OPT_PARAM_BLOCK_SPLITTER 15
 
 static void EnableOptToggles(BrotliEncoderState* s) {
   BrotliEncoderSetParameter(s, (BrotliEncoderParameter)OPT_PARAM_WRITER, 1u);

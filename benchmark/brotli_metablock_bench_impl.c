@@ -226,7 +226,7 @@ MBB_Prepared* MBB_Prepare(int quality, int lgwin, int mode, size_t size_hint,
   BrotliEncoderSetParameter(s, BROTLI_PARAM_OPT_WRITER, (uint32_t)opt_writer);
   BrotliEncoderSetParameter(s, BROTLI_PARAM_OPT_BLOCK_SPLITTER,
                             (uint32_t)opt_block_splitter);
-  BrotliEncoderSetParameter(s, (BrotliEncoderParameter)11,
+  BrotliEncoderSetParameter(s, (BrotliEncoderParameter)14,
                             (uint32_t)opt_matchfinder);
   if (dict != NULL) {
     BrotliEncoderAttachPreparedDictionary(
