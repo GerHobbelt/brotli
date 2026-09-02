@@ -69,6 +69,14 @@ static std::string g_roundtrip_path;
    are used too. */
 static int g_worker_threads = 1;
 static int g_opt_writer = 0;  /* BROTLI_PARAM_OPT_WRITER toggle (--opt-writer) */
+/* Optimized match-finder toggle (--opt-matchfinder[=N]). Parameter id 14 is
+   reserved for BROTLI_PARAM_OPT_MATCHFINDER in encode.h; it is spelled
+   numerically here (like the fuzzer and the metablock benchmark do) so the
+   harness builds on trees that do not carry the optimized match finder --
+   there, BrotliEncoderSetParameter rejects it, which is the intended
+   loud failure. N selects the core (1 = byte-tag, 2 = packed). */
+#define OPT_PARAM_MATCHFINDER ((BrotliEncoderParameter)14)
+static int g_opt_matchfinder = 0;
 /* BROTLI_PARAM_OPT_BLOCK_SPLITTER toggle (--opt-block-splitter) */
 static int g_opt_block_splitter = 0;
 
@@ -208,6 +216,10 @@ static bool EncodeOneFile(const uint8_t* input, size_t input_size,
   BrotliEncoderSetParameter(s, BROTLI_PARAM_SIZE_HINT, (uint32_t)input_size);
   if (g_opt_writer) {
     BrotliEncoderSetParameter(s, BROTLI_PARAM_OPT_WRITER, 1);
+  }
+  if (g_opt_matchfinder) {
+    BrotliEncoderSetParameter(s, OPT_PARAM_MATCHFINDER,
+                              (uint32_t)g_opt_matchfinder);
   }
   if (g_opt_block_splitter) {
     BrotliEncoderSetParameter(s, BROTLI_PARAM_OPT_BLOCK_SPLITTER, 1);
@@ -444,6 +456,7 @@ static void BM_BrotliEncode(benchmark::State& state) {
   state.counters["CompressionRatio"] = ratio;
   state.counters["Quality"] = g_quality;
   state.counters["Opt"] = g_opt_writer;
+  state.counters["OptMF"] = g_opt_matchfinder;
   state.counters["OptBS"] = g_opt_block_splitter;
   state.counters["DictKB"] =
       static_cast<double>(g_dictionary.size()) / 1024.0;
@@ -485,6 +498,10 @@ static void ParseCustomFlags(int* argc, char** argv) {
       g_opt_writer = 1;
     } else if (strncmp(argv[i], "--opt-writer=", 13) == 0) {
       g_opt_writer = atoi(argv[i] + 13);
+    } else if (strcmp(argv[i], "--opt-matchfinder") == 0) {
+      g_opt_matchfinder = 1;
+    } else if (strncmp(argv[i], "--opt-matchfinder=", 18) == 0) {
+      g_opt_matchfinder = atoi(argv[i] + 18);
     } else if (strcmp(argv[i], "--opt-block-splitter") == 0) {
       g_opt_block_splitter = 1;
     } else if (strncmp(argv[i], "--opt-block-splitter=", 21) == 0) {
@@ -521,8 +538,9 @@ int main(int argc, char** argv) {
 
   fprintf(stderr, "Corpus: %s\n", g_corpus_dir.c_str());
   fprintf(stderr, "Quality: %d, lgwin: %d, opt_writer: %d, "
-          "opt_block_splitter: %d\n",
-          g_quality, g_lgwin, g_opt_writer, g_opt_block_splitter);
+          "opt_matchfinder: %d, opt_block_splitter: %d\n",
+          g_quality, g_lgwin, g_opt_writer, g_opt_matchfinder,
+          g_opt_block_splitter);
   LoadCorpus(g_corpus_dir);
 
   if (g_corpus.empty()) {
