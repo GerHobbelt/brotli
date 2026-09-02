@@ -111,6 +111,7 @@ typedef struct {
   int disable_ctx;  /* BROTLI_PARAM_DISABLE_LITERAL_CONTEXT_MODELING */
   size_t chunk_size;    /* 0 = feed the whole payload in one call. */
   size_t flush_period;  /* 0 = never FLUSH; else FLUSH every N chunks. */
+  uint32_t mf_core;     /* OPT_PARAM_MATCHFINDER value: 1 or 2. */
 } EncConfig;
 
 static void DeriveConfig(const uint8_t* h, EncConfig* c) {
@@ -140,6 +141,7 @@ static void DeriveConfig(const uint8_t* h, EncConfig* c) {
     c->chunk_size = e ? ((size_t)1 << e) : 0;    /* one-shot, or 2..2048 */
   }
   c->flush_period = h[5] % 8;                    /* 0..7 */
+  c->mf_core = 1u + ((h[2] >> 5) & 1u);          /* 1 (H59) or 2 (H79) */
 }
 
 /* Optimized-subsystem toggles, referenced by numeric id rather than by enum
@@ -157,9 +159,13 @@ static void DeriveConfig(const uint8_t* h, EncConfig* c) {
 #define OPT_PARAM_MATCHFINDER 14
 #define OPT_PARAM_BLOCK_SPLITTER 15
 
-static void EnableOptToggles(BrotliEncoderState* s) {
+static void EnableOptToggles(BrotliEncoderState* s, uint32_t mf_value) {
   BrotliEncoderSetParameter(s, (BrotliEncoderParameter)OPT_PARAM_WRITER, 1u);
-  BrotliEncoderSetParameter(s, (BrotliEncoderParameter)OPT_PARAM_MATCHFINDER, 1u);
+  /* mf_value alternates 1 (H59 byte-tag) / 2 (H79 packed) so both optimized
+     match-finder cores get coverage; a branch without value-2 support
+     rejects it, leaving the toggle off (the blind-enable contract). */
+  BrotliEncoderSetParameter(s, (BrotliEncoderParameter)OPT_PARAM_MATCHFINDER,
+                            mf_value);
   BrotliEncoderSetParameter(
       s, (BrotliEncoderParameter)OPT_PARAM_BLOCK_SPLITTER, 1u);
 }
@@ -194,7 +200,7 @@ static int EncodeStream(const EncConfig* c, const uint8_t* input,
     BrotliEncoderDestroyInstance(s);
     return 0;
   }
-  EnableOptToggles(s);
+  EnableOptToggles(s, c->mf_core);
   if (dict && !BrotliEncoderAttachPreparedDictionary(s, dict)) {
     BrotliEncoderDestroyInstance(s);
     return 0;  /* couldn't attach: can't test this input, skip */

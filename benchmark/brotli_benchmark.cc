@@ -213,23 +213,40 @@ static bool EncodeOneFile(const uint8_t* input, size_t input_size,
                           uint8_t* output, size_t* output_size) {
   BrotliEncoderState* s = BrotliEncoderCreateInstance(nullptr, nullptr, nullptr);
   if (!s) return false;
-  BrotliEncoderSetParameter(s, BROTLI_PARAM_QUALITY, (uint32_t)g_quality);
-  BrotliEncoderSetParameter(s, BROTLI_PARAM_LGWIN, (uint32_t)g_lgwin);
-  BrotliEncoderSetParameter(s, BROTLI_PARAM_MODE, (uint32_t)g_mode);
-  BrotliEncoderSetParameter(s, BROTLI_PARAM_SIZE_HINT, (uint32_t)input_size);
+  /* F4 (harness audit): a rejected SetParameter used to run the baseline
+     while stderr/counters claimed the requested config. */
+  bool params_ok = true;
+  params_ok &= !!BrotliEncoderSetParameter(s, BROTLI_PARAM_QUALITY,
+                                           (uint32_t)g_quality);
+  params_ok &= !!BrotliEncoderSetParameter(s, BROTLI_PARAM_LGWIN,
+                                           (uint32_t)g_lgwin);
+  params_ok &= !!BrotliEncoderSetParameter(s, BROTLI_PARAM_MODE,
+                                           (uint32_t)g_mode);
+  params_ok &= !!BrotliEncoderSetParameter(s, BROTLI_PARAM_SIZE_HINT,
+                                           (uint32_t)input_size);
   if (g_opt_writer) {
-    BrotliEncoderSetParameter(s, BROTLI_PARAM_OPT_WRITER, 1);
+    params_ok &= !!BrotliEncoderSetParameter(s, BROTLI_PARAM_OPT_WRITER,
+                                             (uint32_t)g_opt_writer);
   }
   if (g_opt_matchfinder) {
-    BrotliEncoderSetParameter(s, OPT_PARAM_MATCHFINDER,
-                              (uint32_t)g_opt_matchfinder);
+    params_ok &= !!BrotliEncoderSetParameter(s, OPT_PARAM_MATCHFINDER,
+                                             (uint32_t)g_opt_matchfinder);
   }
   if (g_opt_block_splitter) {
-    BrotliEncoderSetParameter(s, BROTLI_PARAM_OPT_BLOCK_SPLITTER, 1);
+    params_ok &= !!BrotliEncoderSetParameter(
+        s, BROTLI_PARAM_OPT_BLOCK_SPLITTER, (uint32_t)g_opt_block_splitter);
   }
   if (g_simd_hasher) {
-    BrotliEncoderSetParameter(s, BROTLI_PARAM_SIMD_HASHER,
-                              (uint32_t)g_simd_hasher);
+    params_ok &= !!BrotliEncoderSetParameter(s, BROTLI_PARAM_SIMD_HASHER,
+                                             (uint32_t)g_simd_hasher);
+  }
+  if (!params_ok) {
+    fprintf(stderr, "Error: encoder rejected a parameter value "
+            "(quality=%d lgwin=%d opt_writer=%d opt_matchfinder=%d "
+            "opt_block_splitter=%d simd_hasher=%d)\n",
+            g_quality, g_lgwin, g_opt_writer, g_opt_matchfinder,
+            g_opt_block_splitter, g_simd_hasher);
+    exit(1);
   }
   /* Attach the already-prepared dictionary (cheap: references the precomputed
      hash table built once at startup by LoadDictionary, not re-indexed here). */
@@ -370,6 +387,36 @@ static int WriteDigest(const std::string& path) {
    impact of a ratio-changing change while confirming the output still decodes.
    Returns 0 unless compression itself failed; a roundtrip mismatch is reported
    as ok=0 (and counted), not a hard error. */
+
+/* Decode |encoded| and compare against |expect|. Uses the streaming decoder so
+   the raw shared dictionary (when configured) can be attached -- the one-shot
+   BrotliDecoderDecompress cannot take one, which made every dict-referencing
+   file a false roundtrip FAIL. */
+static bool DecodeMatches(const uint8_t* encoded, size_t encoded_size,
+                          const uint8_t* expect, size_t expect_size) {
+  BrotliDecoderState* ds = BrotliDecoderCreateInstance(nullptr, nullptr,
+                                                       nullptr);
+  if (!ds) return false;
+  if (!g_dictionary.empty() &&
+      !BrotliDecoderAttachDictionary(ds, BROTLI_SHARED_DICTIONARY_RAW,
+                                     g_dictionary.size(),
+                                     g_dictionary.data())) {
+    BrotliDecoderDestroyInstance(ds);
+    return false;
+  }
+  std::vector<uint8_t> decoded(expect_size ? expect_size : 1);
+  const uint8_t* next_in = encoded;
+  size_t avail_in = encoded_size;
+  uint8_t* next_out = decoded.data();
+  size_t avail_out = expect_size;
+  size_t total_out = 0;
+  BrotliDecoderResult r = BrotliDecoderDecompressStream(
+      ds, &avail_in, &next_in, &avail_out, &next_out, &total_out);
+  BrotliDecoderDestroyInstance(ds);
+  return r == BROTLI_DECODER_RESULT_SUCCESS && total_out == expect_size &&
+         (expect_size == 0 || memcmp(decoded.data(), expect, expect_size) == 0);
+}
+
 static int WriteRoundtrip(const std::string& path) {
   const size_t n = g_corpus.size();
   const int nthreads = ClampWorkerThreads(n);
@@ -393,14 +440,8 @@ static int WriteRoundtrip(const std::string& path) {
       return;
     }
     /* Decode back and compare to the original input. */
-    std::vector<uint8_t> decoded(cf.data.size());
-    size_t decoded_size = cf.data.size();
-    BrotliDecoderResult r = BrotliDecoderDecompress(
-        encoded_size, compressed.data(), &decoded_size, decoded.data());
-    bool ok = (r == BROTLI_DECODER_RESULT_SUCCESS) &&
-              (decoded_size == cf.data.size()) &&
-              (decoded_size == 0 ||
-               memcmp(decoded.data(), cf.data.data(), decoded_size) == 0);
+    bool ok = DecodeMatches(compressed.data(), encoded_size,
+                            cf.data.data(), cf.data.size());
     if (!ok) mismatches.fetch_add(1, std::memory_order_relaxed);
     char tail[80];
     snprintf(tail, sizeof(tail), "\t%zu\t%zu\t%d\n",
@@ -522,8 +563,26 @@ static void ParseCustomFlags(int* argc, char** argv) {
   *argc = dst;
 }
 
+
+/* F3 (harness audit): a mistyped custom flag used to be passed through to
+   google-benchmark and silently ignored in every mode (digest/roundtrip
+   return before Initialize), turning A/B runs into A/A. Anything left after
+   ParseCustomFlags must be a google-benchmark flag. */
+static void RejectUnknownFlags(int argc, char** argv) {
+  for (int i = 1; i < argc; i++) {
+    const char* a = argv[i];
+    if (strncmp(a, "--benchmark_", 12) == 0 || strcmp(a, "--help") == 0 ||
+        strncmp(a, "--v=", 4) == 0) {
+      continue;
+    }
+    fprintf(stderr, "Error: unrecognized flag '%s'\n", a);
+    exit(1);
+  }
+}
+
 int main(int argc, char** argv) {
   ParseCustomFlags(&argc, argv);
+  RejectUnknownFlags(argc, argv);
 
   /* Default corpus path: benchmark/corpus/ relative to working directory,
      or relative to the binary location. */
@@ -576,6 +635,7 @@ int main(int argc, char** argv) {
   }
 
   benchmark::Initialize(&argc, argv);
+  if (benchmark::ReportUnrecognizedArguments(argc, argv)) return 1;
   benchmark::RunSpecifiedBenchmarks();
   benchmark::Shutdown();
 

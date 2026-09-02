@@ -216,6 +216,36 @@ static int WriteDigest(const std::string& path) {
   return 0;
 }
 
+
+/* Decode |encoded| and compare against |expect|. Uses the streaming decoder so
+   the raw shared dictionary (when configured) can be attached -- the one-shot
+   BrotliDecoderDecompress cannot take one, which made every dict-referencing
+   file a false roundtrip FAIL. */
+static bool DecodeMatches(const uint8_t* encoded, size_t encoded_size,
+                          const uint8_t* expect, size_t expect_size) {
+  BrotliDecoderState* ds = BrotliDecoderCreateInstance(nullptr, nullptr,
+                                                       nullptr);
+  if (!ds) return false;
+  if (!g_dictionary.empty() &&
+      !BrotliDecoderAttachDictionary(ds, BROTLI_SHARED_DICTIONARY_RAW,
+                                     g_dictionary.size(),
+                                     g_dictionary.data())) {
+    BrotliDecoderDestroyInstance(ds);
+    return false;
+  }
+  std::vector<uint8_t> decoded(expect_size ? expect_size : 1);
+  const uint8_t* next_in = encoded;
+  size_t avail_in = encoded_size;
+  uint8_t* next_out = decoded.data();
+  size_t avail_out = expect_size;
+  size_t total_out = 0;
+  BrotliDecoderResult r = BrotliDecoderDecompressStream(
+      ds, &avail_in, &next_in, &avail_out, &next_out, &total_out);
+  BrotliDecoderDestroyInstance(ds);
+  return r == BROTLI_DECODER_RESULT_SUCCESS && total_out == expect_size &&
+         (expect_size == 0 || memcmp(decoded.data(), expect, expect_size) == 0);
+}
+
 /* Decode each file's exact encoder output and verify it reproduces the input:
    "name<TAB>input_size<TAB>compressed_size<TAB>ok". */
 static int WriteRoundtrip(const std::string& path) {
@@ -223,14 +253,8 @@ static int WriteRoundtrip(const std::string& path) {
   size_t mismatches = 0;
   for (size_t i = 0; i < g_prepared.size(); i++) {
     const PreparedFile& f = g_prepared[i];
-    std::vector<uint8_t> decoded(f.file_size);
-    size_t decoded_size = f.file_size;
-    BrotliDecoderResult r = BrotliDecoderDecompress(
-        f.compressed.size(), f.compressed.data(), &decoded_size, decoded.data());
-    bool ok = (r == BROTLI_DECODER_RESULT_SUCCESS) &&
-              (decoded_size == f.file_size) &&
-              (decoded_size == 0 ||
-               memcmp(decoded.data(), f.input_buf.data(), decoded_size) == 0);
+    bool ok = DecodeMatches(f.compressed.data(), f.compressed.size(),
+                            f.input_buf.data(), f.file_size);
     if (!ok) mismatches++;
     char tail[80];
     snprintf(tail, sizeof(tail), "\t%zu\t%zu\t%d\n", f.file_size,
@@ -388,8 +412,26 @@ static void ParseCustomFlags(int* argc, char** argv) {
   *argc = dst;
 }
 
+
+/* F3 (harness audit): a mistyped custom flag used to be passed through to
+   google-benchmark and silently ignored in every mode (digest/roundtrip
+   return before Initialize), turning A/B runs into A/A. Anything left after
+   ParseCustomFlags must be a google-benchmark flag. */
+static void RejectUnknownFlags(int argc, char** argv) {
+  for (int i = 1; i < argc; i++) {
+    const char* a = argv[i];
+    if (strncmp(a, "--benchmark_", 12) == 0 || strcmp(a, "--help") == 0 ||
+        strncmp(a, "--v=", 4) == 0) {
+      continue;
+    }
+    fprintf(stderr, "Error: unrecognized flag '%s'\n", a);
+    exit(1);
+  }
+}
+
 int main(int argc, char** argv) {
   ParseCustomFlags(&argc, argv);
+  RejectUnknownFlags(argc, argv);
 
   if (g_corpus_dir.empty()) {
     if (fs::exists("benchmark/corpus")) {
@@ -444,6 +486,7 @@ int main(int argc, char** argv) {
   }
 
   benchmark::Initialize(&argc, argv);
+  if (benchmark::ReportUnrecognizedArguments(argc, argv)) return 1;
   benchmark::RunSpecifiedBenchmarks();
   benchmark::Shutdown();
 

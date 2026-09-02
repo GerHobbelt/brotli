@@ -1252,8 +1252,8 @@ def main():
     }
     (record_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
-    # A plain digest run is a correctness gate: exit non-zero on divergence
-    # (--verify already does; this makes `--mode digest` scriptable too).
+    # Plain digest/roundtrip runs are correctness gates: exit non-zero on a
+    # failure (--verify already does; this makes them scriptable too).
     if args.mode == "digest":
         bad = [str(r["quality"]) for r in sweep_results
                if r.get("comparison")
@@ -1262,6 +1262,14 @@ def main():
             print(f"\nRun record: {record_dir}")
             sys.exit("digest: variants NOT bit-identical at q" +
                      ",".join(bad) + " (see diffs above)")
+    if args.mode == "roundtrip":
+        bad = [str(r["quality"]) for r in sweep_results
+               if r.get("comparison")
+               and not r["comparison"].get("all_roundtrip_ok", True)]
+        if bad:
+            print(f"\nRun record: {record_dir}")
+            sys.exit("roundtrip: decode FAILURES at q" + ",".join(bad) +
+                     " (see report above)")
 
     # Print each artifact as a path relative to the current directory (so it can
     # be pasted straight into a pprof/compare command), falling back to the
