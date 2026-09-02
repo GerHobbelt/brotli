@@ -178,10 +178,19 @@ static BROTLI_BOOL MBB_EncodeData(BrotliEncoderState* s, BROTLI_BOOL is_last,
     size_t storage_ix = s->last_bytes_bits_;
     (*storage)[0] = (uint8_t)s->last_bytes_;
     (*storage)[1] = (uint8_t)(s->last_bytes_ >> 8);
+    /* The benchmark never sets BROTLI_PARAM_BASE64_MODE, so no regions can
+       be pending; the timed replay relies on this (it passes NULL, 0). */
+    if (s->hasher_.common.num_base64_regions != 0) {
+      fprintf(stderr, "metablock bench: base64 regions unsupported\n");
+      abort();
+    }
     WriteMetaBlockInternal(m, input, mask, s->last_flush_pos_, mb->bytes,
-        is_last, literal_context_mode, &s->params, s->prev_byte_,
-        s->prev_byte2_, s->num_literals_, s->num_commands_, s->commands_,
-        s->saved_dist_cache_, s->dist_cache_, &storage_ix, *storage);
+        is_last, s->hasher_.common.base64_regions,
+        s->hasher_.common.num_base64_regions, literal_context_mode,
+        &s->params, s->prev_byte_, s->prev_byte2_, s->num_literals_,
+        s->num_commands_, s->commands_, s->saved_dist_cache_, s->dist_cache_,
+        &storage_ix, *storage);
+    s->hasher_.common.num_base64_regions = 0;
     if (BROTLI_IS_OOM(m)) return BROTLI_FALSE;
     s->last_bytes_ = (uint16_t)(*storage)[storage_ix >> 3];
     s->last_bytes_bits_ = (uint8_t)(storage_ix & 7u);
@@ -354,7 +363,7 @@ size_t MBB_Store(const MBB_Prepared* p, int i, const uint8_t* input,
   storage[0] = (uint8_t)*last_bytes;
   storage[1] = (uint8_t)(*last_bytes >> 8);
   WriteMetaBlockInternal(m, input, mask, mb->last_flush_pos, mb->bytes,
-                         (BROTLI_BOOL)mb->is_last,
+                         (BROTLI_BOOL)mb->is_last, NULL, 0,
                          (ContextType)mb->literal_context_mode, &s->params,
                          mb->prev_byte, mb->prev_byte2, mb->num_literals,
                          mb->num_commands, cmd_copy, saved_dist_cache,
