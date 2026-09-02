@@ -79,6 +79,9 @@ static int g_opt_writer = 0;  /* BROTLI_PARAM_OPT_WRITER toggle (--opt-writer) *
 static int g_opt_matchfinder = 0;
 /* BROTLI_PARAM_OPT_BLOCK_SPLITTER toggle (--opt-block-splitter) */
 static int g_opt_block_splitter = 0;
+/* BROTLI_PARAM_SIMD_HASHER (--simd-hasher): BrotliEncoderSimdHasher value;
+   1 (ENABLE) raises the SIMD-hasher quality ceiling to 7. 0 = leave default. */
+static int g_simd_hasher = 0;
 
 /* Optional shared (raw LZ77 prefix) dictionary attached to every encode via the
    streaming API (--dictionary). The one-shot BrotliEncoderCompress cannot take
@@ -223,6 +226,10 @@ static bool EncodeOneFile(const uint8_t* input, size_t input_size,
   }
   if (g_opt_block_splitter) {
     BrotliEncoderSetParameter(s, BROTLI_PARAM_OPT_BLOCK_SPLITTER, 1);
+  }
+  if (g_simd_hasher) {
+    BrotliEncoderSetParameter(s, BROTLI_PARAM_SIMD_HASHER,
+                              (uint32_t)g_simd_hasher);
   }
   /* Attach the already-prepared dictionary (cheap: references the precomputed
      hash table built once at startup by LoadDictionary, not re-indexed here). */
@@ -506,6 +513,8 @@ static void ParseCustomFlags(int* argc, char** argv) {
       g_opt_block_splitter = 1;
     } else if (strncmp(argv[i], "--opt-block-splitter=", 21) == 0) {
       g_opt_block_splitter = atoi(argv[i] + 21);
+    } else if (strncmp(argv[i], "--simd-hasher=", 14) == 0) {
+      g_simd_hasher = atoi(argv[i] + 14);
     } else {
       argv[dst++] = argv[i];
     }
@@ -538,9 +547,9 @@ int main(int argc, char** argv) {
 
   fprintf(stderr, "Corpus: %s\n", g_corpus_dir.c_str());
   fprintf(stderr, "Quality: %d, lgwin: %d, opt_writer: %d, "
-          "opt_matchfinder: %d, opt_block_splitter: %d\n",
+          "opt_matchfinder: %d, opt_block_splitter: %d, simd_hasher: %d\n",
           g_quality, g_lgwin, g_opt_writer, g_opt_matchfinder,
-          g_opt_block_splitter);
+          g_opt_block_splitter, g_simd_hasher);
   LoadCorpus(g_corpus_dir);
 
   if (g_corpus.empty()) {
