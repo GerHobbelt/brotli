@@ -131,6 +131,7 @@ typedef struct {
   BROTLI_BOOL copy_stat;
   BROTLI_BOOL write_to_stdout;
   BROTLI_BOOL test_integrity;
+  BROTLI_BOOL diagnostic_safety_check;
   BROTLI_BOOL decompress;
   BROTLI_BOOL large_window;
   BROTLI_BOOL allow_concatenated;
@@ -593,6 +594,9 @@ static Command ParseParams(Context* params) {
       } else if (strcmp("version", arg) == 0) {
         /* Don't parse further. */
         return COMMAND_VERSION;
+      } else if (strcmp("diagnostic-safety-check", arg) == 0) {
+        params->diagnostic_safety_check = BROTLI_TRUE;
+        continue;
       } else {
         /* key=value */
         const char* value = strchr(arg, '=');
