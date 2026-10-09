@@ -24,7 +24,7 @@ from distutils import log
 CURR_DIR = os.path.abspath(os.path.dirname(os.path.realpath(__file__)))
 
 
-def bool_from_environ(key: str):
+def bool_from_environ(key):
     value = os.environ.get(key)
     if not value:
         return False
@@ -32,7 +32,7 @@ def bool_from_environ(key: str):
        return True
     if value == "0":
        return False
-    raise ValueError(f"Environment variable {key} has invalid value {value}. Please set it to 1, 0 or an empty string")
+    raise ValueError("Environment variable {} has invalid value {}. Please set it to 1, 0 or an empty string".format(key, value))
 
 
 def read_define(path, macro):
@@ -234,7 +234,9 @@ else:
                 "c/dec/bit_reader.c",
                 "c/dec/decode.c",
                 "c/dec/huffman.c",
+                "c/dec/prefix.c",
                 "c/dec/state.c",
+                "c/dec/static_init.c",
                 "c/enc/backward_references.c",
                 "c/enc/backward_references_hq.c",
                 "c/enc/bit_cost.c",
@@ -265,12 +267,15 @@ else:
                 "c/common/dictionary.h",
                 "c/common/platform.h",
                 "c/common/shared_dictionary_internal.h",
+                "c/common/static_init.h",
                 "c/common/transform.h",
                 "c/common/version.h",
                 "c/dec/bit_reader.h",
                 "c/dec/huffman.h",
                 "c/dec/prefix.h",
+                "c/dec/prefix_inc.h",
                 "c/dec/state.h",
+                "c/dec/static_init.h",
                 "c/enc/backward_references.h",
                 "c/enc/backward_references_hq.h",
                 "c/enc/backward_references_inc.h",
@@ -287,6 +292,7 @@ else:
                 "c/enc/compress_fragment.h",
                 "c/enc/compress_fragment_two_pass.h",
                 "c/enc/dictionary_hash.h",
+                "c/enc/dictionary_hash_inc.h",
                 "c/enc/encoder_dict.h",
                 "c/enc/entropy_encode.h",
                 "c/enc/entropy_encode_static.h",
