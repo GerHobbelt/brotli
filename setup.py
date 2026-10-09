@@ -94,9 +94,7 @@ class BuildExt(build_ext):
         objects = []
 
         macros = ext.define_macros[:]
-        if platform.system() == "Darwin":
-            macros.append(("OS_MACOSX", "1"))
-        elif self.compiler.compiler_type == "mingw32":
+        if self.compiler.compiler_type == "mingw32":
             # On Windows Python 2.7, pyconfig.h defines "hypot" as "_hypot",
             # This clashes with GCC's cmath, and causes compilation errors when
             # building under MinGW: http://bugs.python.org/issue11566
@@ -160,7 +158,8 @@ CLASSIFIERS = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    # Deprecated, see https://packaging.python.org/en/latest/guides/writing-pyproject-toml/#license for details.
+    # "License :: OSI Approved :: MIT License",
     "Operating System :: MacOS :: MacOS X",
     "Operating System :: Microsoft :: Windows",
     "Operating System :: POSIX :: Linux",
