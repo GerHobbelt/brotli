@@ -30,22 +30,29 @@ jobs:
     steps:
 
     - name: Harden Runner
-      uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+      uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
       with:
         egress-policy: audit
 
     - name: Checkout repository
-      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
 
     - name: Install tools
       run: |
         eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-        brew install buildifier ruff typos-cli
+        brew install buildifier ruff typos-cli zizmor
 
     - name: Check typos
       run: |
         eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
         ./scripts/check_typos.sh
+
+    - name: Audit workflows
+      run: |
+        eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+        zizmor --pedantic ./.github/workflows
 
     - name: Lint Python code
       run: |
