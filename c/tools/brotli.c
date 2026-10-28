@@ -1573,7 +1573,7 @@ int main(int argc, const char** argv) {
     case COMMAND_INVALID:
     default:
       is_ok = (command == COMMAND_HELP);
-      PrintHelp(FileName(argv[0]), is_ok);
+      PrintHelp(FileName(argv[0]), !is_ok);
       break;
   }
 
