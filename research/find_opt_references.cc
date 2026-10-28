@@ -17,9 +17,11 @@
 #include <vector>
 
 #include <gflags/gflags.h>
+
 using gflags::ParseCommandLineFlags;
 
-#include "third_party/absl/flags/flag.h"
+#include <absl/flags/flag.h>
+
 #include <sais.hxx>
 
 DEFINE_bool(advanced, false, "Advanced searching mode: finds all longest "
@@ -195,7 +197,13 @@ void ProcessEntries(entry_type* entries, size_t size, FILE* fout) {
   }
 }
 
-int main(int argc, char* argv[]) {
+
+#if defined(BUILD_MONOLITHIC)
+#define main    brotli_find_opt_references_main
+#endif
+
+int main(int argc, const char** argv)
+{
   base::ParseCommandLine(&argc, &argv);
   if (argc != 3) {
     printf("usage: %s input_file output_file\n", argv[0]);

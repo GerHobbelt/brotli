@@ -27,6 +27,8 @@
 #include <brotli/decode.h>
 #include <brotli/encode.h>
 
+#include "monolithic_examples.h"
+
 #if defined(_WIN32)
 #include <io.h>
 #include <share.h>
@@ -145,7 +147,7 @@ typedef struct {
 
   /* Inner state */
   int argc;
-  char** argv;
+  const char** argv;
   uint8_t* dictionary;
   size_t dictionary_size;
   BrotliEncoderPreparedDictionary* prepared_dictionary;
@@ -269,7 +271,7 @@ static BROTLI_BOOL CheckAlias(const char* name, const char* alias) {
 
 static Command ParseParams(Context* params) {
   int argc = params->argc;
-  char** argv = params->argv;
+  const char** argv = params->argv;
   int i;
   int next_option_index = 0;
   size_t input_count = 0;
@@ -1480,7 +1482,12 @@ static BROTLI_BOOL CompressFiles(Context* context) {
   return BROTLI_TRUE;
 }
 
-int main(int argc, char** argv) {
+
+#if defined(BUILD_MONOLITHIC)
+#define main(cnt, arr)      brotli_main(cnt, arr)
+#endif
+
+int main(int argc, const char** argv) {
   Command command;
   Context context;
   BROTLI_BOOL is_ok = BROTLI_TRUE;
