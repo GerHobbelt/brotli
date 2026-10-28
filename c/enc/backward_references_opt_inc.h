@@ -36,19 +36,29 @@ static BROTLI_NOINLINE void EXPORT_FN(CreateBackwardReferences)(
   /* Minimum score to accept a backward reference. */
   const score_t kMinScore = BROTLI_SCORE_BASE + 100;
 
+  size_t next_base64_pos = pos_end;
+
   FN(PrepareDistanceCache)(privat, dist_cache);
 
-  size_t next_base64_pos = pos_end;
   if (params->base64_mode &&
       hasher->common.num_base64_regions < params->max_base64_regions) {
     next_base64_pos =
         FindNextBase64Trigger(ringbuffer, ringbuffer_mask, position, pos_end);
   }
   while (position + FN(HashTypeLength)() < pos_end) {
+    size_t max_length;
+    size_t max_distance;
+    size_t dictionary_start;
+    HasherSearchResult sr;
+    int dict_id;
+    uint8_t p1;
+    uint8_t p2;
     if (position >= next_base64_pos) {
       /* Find where it ends */
       size_t scan_pos = position + kBase64TriggerLen;
       size_t first_equal_pos = 0;
+      size_t start_pos;
+      size_t length;
       while (scan_pos < pos_end) {
         uint8_t c = ringbuffer[scan_pos & ringbuffer_mask];
         if (IsBase64Char(c)) {
@@ -68,8 +78,8 @@ static BROTLI_NOINLINE void EXPORT_FN(CreateBackwardReferences)(
       }
       /* Jump directly to the end of base64 block */
       /* Skip the ';base64,' trigger */
-      size_t start_pos = position + kBase64TriggerLen;
-      size_t length = scan_pos - start_pos;
+      start_pos = position + kBase64TriggerLen;
+      length = scan_pos - start_pos;
       /* Exclude '=' characters from the flat 6-bit entropy block */
       while (length > 0 &&
              ringbuffer[(start_pos + length - 1) & ringbuffer_mask] == '=') {
@@ -92,14 +102,13 @@ static BROTLI_NOINLINE void EXPORT_FN(CreateBackwardReferences)(
       }
       continue;
     }
-    size_t max_length = pos_end - position;
-    size_t max_distance = BROTLI_MIN(size_t, position, max_backward_limit);
-    size_t dictionary_start = BROTLI_MIN(size_t,
+    max_length = pos_end - position;
+    max_distance = BROTLI_MIN(size_t, position, max_backward_limit);
+    dictionary_start = BROTLI_MIN(size_t,
         position + position_offset, max_backward_limit);
-    HasherSearchResult sr;
-    int dict_id = 0;
-    uint8_t p1 = 0;
-    uint8_t p2 = 0;
+    dict_id = 0;
+    p1 = 0;
+    p2 = 0;
     if (params->dictionary.contextual.context_based) {
       p1 = position >= 1 ?
           ringbuffer[(size_t)(position - 1) & ringbuffer_mask] : 0;

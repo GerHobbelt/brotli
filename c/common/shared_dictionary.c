@@ -461,7 +461,7 @@ void BrotliSharedDictionaryDestroyInstance(
 BROTLI_BOOL BrotliSharedDictionaryAttach(
     BrotliSharedDictionary* dict, BrotliSharedDictionaryType type,
     size_t data_size, const uint8_t data[BROTLI_ARRAY_PARAM(data_size)]) {
-  if (!dict) {
+  if (!dict || (data_size > 0 && !data)) {
     return BROTLI_FALSE;
   }
 #if defined(BROTLI_EXPERIMENTAL)
@@ -471,6 +471,9 @@ BROTLI_BOOL BrotliSharedDictionaryAttach(
 #endif  /* BROTLI_EXPERIMENTAL */
   if (type == BROTLI_SHARED_DICTIONARY_RAW) {
     if (dict->num_prefix >= SHARED_BROTLI_MAX_COMPOUND_DICTS) {
+      return BROTLI_FALSE;
+    }
+    if (data_size > SHARED_BROTLI_MAX_RAW_DICT_SIZE) {
       return BROTLI_FALSE;
     }
     dict->prefix_size[dict->num_prefix] = data_size;
@@ -489,6 +492,8 @@ BrotliSharedDictionary* BrotliSharedDictionaryCreateInstance(
   } else if (alloc_func && free_func) {
     dict = (BrotliSharedDictionary*)alloc_func(
         opaque, sizeof(BrotliSharedDictionary));
+  } else {
+    return 0;
   }
   if (dict == 0) {
     return 0;

@@ -634,11 +634,15 @@ BROTLI_UNUSED_FUNCTION void BrotliSuppressUnusedFunctions(void) {
 #endif
 }
 
-#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_I86)) && \
+#if defined(_MSC_VER) && (_MSC_VER >= 1800) &&(defined(_M_X64) || defined(_M_I86)) && \
     !defined(_M_ARM64EC)
 /* _mm_prefetch() is not defined outside of x86/x64 */
 /* https://msdn.microsoft.com/fr-fr/library/84szxsww(v=vs.90).aspx */
+#if 0 && _MSC_VER >= 1800
 #include <mmintrin.h>
+#else
+#undef SUPPORTS_SSE2
+#endif
 #define PREFETCH_L1(ptr) _mm_prefetch((const char*)(ptr), _MM_HINT_T0)
 #define PREFETCH_L2(ptr) _mm_prefetch((const char*)(ptr), _MM_HINT_T1)
 #elif BROTLI_GNUC_HAS_BUILTIN(__builtin_prefetch, 3, 1, 0)
@@ -681,6 +685,16 @@ BROTLI_UNUSED_FUNCTION void BrotliSuppressUnusedFunctions(void) {
 #define BROTLI_CRASH() (void)__builtin_trap()
 #else
 #define BROTLI_CRASH() (void)abort()
+#endif
+
+/* Release-surviving bounds check. Unlike BROTLI_DCHECK, this is never stripped
+   in release builds. Use for invariants whose violation would cause memory
+   corruption. Opt-out with -DBROTLI_HARDENED=0 for benchmarking. */
+#if !defined(BROTLI_HARDENED) || BROTLI_HARDENED
+#define BROTLI_SECURITY_CHECK(x) \
+  do { if (BROTLI_PREDICT_FALSE(!(x))) BROTLI_CRASH(); } while (0)
+#else
+#define BROTLI_SECURITY_CHECK(x)
 #endif
 
 /* Make BROTLI_TEST=0 act same as undefined. */
