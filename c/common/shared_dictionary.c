@@ -473,6 +473,9 @@ BROTLI_BOOL BrotliSharedDictionaryAttach(
     if (dict->num_prefix >= SHARED_BROTLI_MAX_COMPOUND_DICTS) {
       return BROTLI_FALSE;
     }
+    if (data_size > SHARED_BROTLI_MAX_RAW_DICT_SIZE) {
+      return BROTLI_FALSE;
+    }
     dict->prefix_size[dict->num_prefix] = data_size;
     dict->prefix[dict->num_prefix] = data;
     dict->num_prefix++;
@@ -489,6 +492,8 @@ BrotliSharedDictionary* BrotliSharedDictionaryCreateInstance(
   } else if (alloc_func && free_func) {
     dict = (BrotliSharedDictionary*)alloc_func(
         opaque, sizeof(BrotliSharedDictionary));
+  } else {
+    return 0;
   }
   if (dict == 0) {
     return 0;
