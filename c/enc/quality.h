@@ -160,10 +160,11 @@ static BROTLI_INLINE size_t LiteralSpreeLengthForSparseSearch(
 #if defined(BROTLI_MAX_SIMD_QUALITY)
 static BROTLI_INLINE BROTLI_BOOL
 ShouldUseSimdHasher(const BrotliEncoderParams* params) {
+  int max_quality;
   if (params->simd_hasher == BROTLI_SIMD_HASHER_DISABLE) {
     return BROTLI_FALSE;
   }
-  int max_quality = BROTLI_MAX_RECOMMENDED_SIMD_QUALITY;
+  max_quality = BROTLI_MAX_RECOMMENDED_SIMD_QUALITY;
 
   if (params->simd_hasher == BROTLI_SIMD_HASHER_ENABLE) {
     max_quality = BROTLI_MAX_SIMD_QUALITY;

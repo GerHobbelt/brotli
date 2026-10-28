@@ -43,6 +43,7 @@ static void ForceBase64LiteralSplits(MemoryManager* m, BlockSplit* split,
   size_t new_num_blocks = 0;
   size_t curr_offset = 0;
   size_t block_idx = 0;
+  uint8_t base64_type_id;
 
   if (BROTLI_IS_OOM(m) || BROTLI_IS_NULL(new_types) ||
       BROTLI_IS_NULL(new_lengths)) {
@@ -50,7 +51,7 @@ static void ForceBase64LiteralSplits(MemoryManager* m, BlockSplit* split,
   }
 
   memset(mb->literal_is_base64, 0, sizeof(mb->literal_is_base64));
-  uint8_t base64_type_id = (uint8_t)split->num_types;
+  base64_type_id = (uint8_t)split->num_types;
   mb->literal_is_base64[base64_type_id >> 3] |=
       (uint8_t)(1u << (base64_type_id & 7));
 
@@ -66,13 +67,15 @@ static void ForceBase64LiteralSplits(MemoryManager* m, BlockSplit* split,
       size_t b64_end = b64_start + base64_regions[r].length;
 
       if (b64_start < block_end && b64_end > block_start) {
+        size_t intersect_start;
+        size_t intersect_end;
         if (b64_start > block_start) {
           new_types[new_num_blocks] = block_type;
           new_lengths[new_num_blocks] = (uint32_t)(b64_start - block_start);
           new_num_blocks++;
         }
-        size_t intersect_start = BROTLI_MAX(size_t, block_start, b64_start);
-        size_t intersect_end = BROTLI_MIN(size_t, block_end, b64_end);
+        intersect_start = BROTLI_MAX(size_t, block_start, b64_start);
+        intersect_end = BROTLI_MIN(size_t, block_end, b64_end);
         new_types[new_num_blocks] = base64_type_id;
         new_lengths[new_num_blocks] =
             (uint32_t)(intersect_end - intersect_start);
